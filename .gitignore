@@ -1,0 +1,22 @@
+# Capturas de tráfico y respuestas reales del portal: contienen contraseñas,
+# sesiones y datos de alumnos. Nunca subirlas.
+*.har
+*.asp
+*.aspx
+
+# Carpetas descomprimidas de los paquetes
+DOCENTES/ANDROID Y CHROME/*/
+DOCENTES/FIREFOX/*/
+ESTUDIANTES/ANDROID Y CHROME/*/
+ESTUDIANTES/FIREFOX/*/
+
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+desktop.ini
+.claude/
+
+# Respaldos locales que pueden incluir el HAR
+/DOCENTES.zip
+/ESTUDIANTES.zip
