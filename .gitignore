@@ -20,3 +20,12 @@ desktop.ini
 # Respaldos locales que pueden incluir el HAR
 /DOCENTES.zip
 /ESTUDIANTES.zip
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.jks
+*.keystore
+android-firma/

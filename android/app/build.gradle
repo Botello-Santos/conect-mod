@@ -1,0 +1,114 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Firma: en GitHub Actions llega por variables de entorno (secretos del repo).
+def keystoreFile = System.getenv('KEYSTORE_FILE')
+def repoRaiz = rootProject.projectDir.parentFile
+
+android {
+    namespace 'mx.conectmod.app'
+    compileSdk 34
+
+    defaultConfig {
+        minSdk 24
+        targetSdk 34
+        versionCode((System.getenv('VERSION_CODE') ?: '1').toInteger())
+        versionName(System.getenv('VERSION_NAME') ?: '1.0.0')
+    }
+
+    flavorDimensions = ['portal']
+    productFlavors {
+        estudiantes {
+            dimension 'portal'
+            applicationId 'mx.conectmod.estudiantes'
+            resValue 'string', 'app_name', 'CONECT Mod'
+            buildConfigField 'String', 'URL_INICIO', '"https://purisima.tecnm.mx/conect/"'
+        }
+        docentes {
+            dimension 'portal'
+            applicationId 'mx.conectmod.docentes'
+            resValue 'string', 'app_name', 'CONECT Docentes'
+            buildConfigField 'String', 'URL_INICIO', '"https://purisima.tecnm.mx/conect_docentes/"'
+        }
+    }
+
+    signingConfigs {
+        release {
+            if (keystoreFile) {
+                storeFile file(keystoreFile)
+                storePassword System.getenv('KEYSTORE_PASSWORD')
+                keyAlias System.getenv('KEY_ALIAS')
+                keyPassword System.getenv('KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig keystoreFile ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        estudiantes.assets.srcDirs += "$buildDir/generated/inyeccion/estudiantes"
+        docentes.assets.srcDirs += "$buildDir/generated/inyeccion/docentes"
+    }
+}
+
+dependencies {
+    implementation 'androidx.webkit:webkit:1.11.0'
+    implementation 'androidx.activity:activity:1.9.2'
+    implementation 'androidx.core:core:1.13.1'
+}
+
+/*
+ * Genera assets/inyectar.js para cada sabor a partir de los mismos scripts de las
+ * extensiones. Se envuelve todo para ejecutarlo al terminar de cargar el DOM
+ * (equivale a run_at: document_idle de la extensión).
+ */
+def generarInyeccion = { String sabor, Closure<List<String>> fuentes ->
+    def tarea = tasks.register("generarInyeccion${sabor.capitalize()}") {
+        def salida = file("$buildDir/generated/inyeccion/$sabor/inyectar.js")
+        outputs.file(salida)
+        outputs.upToDateWhen { false }
+        doLast {
+            def sb = new StringBuilder()
+            sb << "(function(){var __cmodRun=function(){\n"
+            fuentes().each { codigo -> sb << codigo << "\n;\n" }
+            sb << "};if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',__cmodRun,{once:true});}else{__cmodRun();}})();\n"
+            salida.parentFile.mkdirs()
+            salida.setText(sb.toString(), 'UTF-8')
+        }
+    }
+    tasks.named('preBuild').configure { dependsOn tarea }
+}
+
+generarInyeccion('estudiantes') {
+    def carpeta = new File(repoRaiz, 'ESTUDIANTES/ANDROID Y CHROME')
+    def zip = carpeta.listFiles().find { it.name.endsWith('.zip') }
+    if (zip == null) throw new GradleException("No se encontró el .zip de estudiantes en $carpeta")
+    def arbol = zipTree(zip)
+    def leer = { String nombre -> arbol.matching { include nombre }.singleFile.getText('UTF-8') }
+    [leer('lib/bootstrap.bundle.min.js'), leer('conect-mod.js')]
+}
+
+generarInyeccion('docentes') {
+    [new File(repoRaiz, 'DOCENTES/src/lib/xlsx.full.min.js').getText('UTF-8'),
+     new File(repoRaiz, 'DOCENTES/src/conect-docentes.js').getText('UTF-8')]
+}

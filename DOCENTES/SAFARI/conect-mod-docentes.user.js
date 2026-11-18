@@ -527,6 +527,17 @@
     XLSX.utils.book_append_sheet(wb, ws, 'Calificaciones');
     XLSX.utils.book_append_sheet(wb, info, 'Info');
     const nombre = 'Calificaciones_' + (modelo.claveGrupo || 'grupo').replace(/[^\w-]+/g, '') + '_P' + modelo.parcial + '.xlsx';
+    // En la app de Android (WebView) las descargas blob: no funcionan: se manda el archivo a la app
+    if (window.CMODAndroid && typeof window.CMODAndroid.postMessage === 'function') {
+      const base64 = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
+      window.CMODAndroid.postMessage(JSON.stringify({
+        tipo: 'descargar',
+        nombre,
+        mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        base64
+      }));
+      return;
+    }
     XLSX.writeFile(wb, nombre);
   }
 

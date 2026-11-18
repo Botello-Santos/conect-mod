@@ -18,7 +18,11 @@ Descarga el paquete desde [Releases](../../releases) o desde la carpeta correspo
 2. Abre `chrome://extensions`, activa *Modo de desarrollador*.
 3. *Cargar descomprimida* → elige la carpeta.
 
-**Android** (Kiwi, Lemur u otro navegador con soporte de extensiones): instala el `.zip` desde el gestor de extensiones del navegador.
+**Android (app)**: descarga `conect-mod-estudiantes.apk` o `conect-mod-docentes.apk` desde [Releases](../../releases)
+y ábrelo (Android pedirá permitir instalar apps de origen desconocido). Requiere Android 7.0 o superior.
+La app abre el portal e incluye el mismo mod; también permite subir el Excel, guardar la plantilla e imprimir.
+
+**Android (navegador)**: en Kiwi, Lemur u otro navegador con soporte de extensiones, instala el `.zip` desde su gestor de extensiones.
 
 **Firefox**: `about:debugging#/runtime/this-firefox` → *Cargar complemento temporal* → elige el `.zip` de `FIREFOX`
 (para instalación permanente debe firmarse en addons.mozilla.org).
@@ -49,6 +53,10 @@ python build.py
 ```
 
 Genera los paquetes de Chrome, Firefox y Safari a partir de `DOCENTES/src/`.
+
+Las apps Android (`android/`, un WebView con dos sabores: `estudiantes` y `docentes`) se compilan en
+GitHub Actions ([android.yml](.github/workflows/android.yml)) al publicar un Release, y los APK firmados se
+adjuntan automáticamente. Requiere los secretos `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD` y `KEY_ALIAS`.
 
 ## Créditos
 
