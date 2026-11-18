@@ -75,6 +75,8 @@ dependencies {
     implementation 'androidx.webkit:webkit:1.11.0'
     implementation 'androidx.activity:activity:1.9.2'
     implementation 'androidx.core:core:1.13.1'
+    // Alinea kotlin-stdlib-jdk7/jdk8 (traídos por AndroidX) con kotlin-stdlib 1.8+ para evitar clases duplicadas
+    implementation platform('org.jetbrains.kotlin:kotlin-bom:1.8.22')
 }
 
 /*
