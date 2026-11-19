@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CONECT Mod Docentes - Captura desde Excel
 // @namespace    https://purisima.tecnm.mx/conect_docentes/
-// @version      1.0.0
+// @version      1.1.0
 // @description  Sube un Excel y asigna automáticamente las calificaciones parciales en el portal CONECT de docentes del ITSPR. Todo se procesa localmente.
 // @author       Equipo CONECT Mod
 // @match        https://purisima.tecnm.mx/conect_docentes/*
@@ -912,9 +912,252 @@ input.cdoc-reprobado{color:#b42318!important;font-weight:700}
   }
 
   /* ------------------------------------------------------------------------
+     Pantallas de acceso
+     - Usuario:     xyz_p1_Logi_Us13_Acce.html   (input username, botón login)
+     - Contraseña:  27_p3_Pass_xyz_Logi_Acce.asp (input password, botón valida_pass)
+     - Captura:     xyzLogPassCaptCalif123.asp   (input passwordCC, botón valida_passCC)
+     Se reutilizan el formulario y los campos originales (mismos nombres y
+     valores), solo se reacomodan. El mod no lee lo que se escribe.
+     ------------------------------------------------------------------------ */
+  const PASOS_ACCESO = {
+    username: {
+      paso: 1, titulo: 'Inicia sesión', texto: 'Escribe tu usuario (clave de docente).',
+      etiqueta: 'Usuario', auto: 'username'
+    },
+    password: {
+      paso: 2, titulo: 'Contraseña', texto: 'Escribe tu contraseña del portal.',
+      etiqueta: 'Contraseña', auto: 'current-password', volver: 'xyz_p1_Logi_Us13_Acce.html'
+    },
+    passwordCC: {
+      titulo: 'Contraseña de captura', texto: 'Para capturar calificaciones escribe tu contraseña de captura.',
+      etiqueta: 'Contraseña de captura', auto: 'off'
+    }
+  };
+
+  function detectarAcceso() {
+    for (const nombre of Object.keys(PASOS_ACCESO)) {
+      const campo = $('input[name="' + nombre + '"]');
+      if (campo && campo.form) return { nombre, campo, form: campo.form, cfg: PASOS_ACCESO[nombre] };
+    }
+    return null;
+  }
+
+  function nombreDocente() {
+    try {
+      const p = new URLSearchParams(location.search);
+      const n = (p.get('catnombreUser_Nombre') || p.get('cat_nombre') || '').trim();
+      if (!n || n.includes('\ufffd')) return '';
+      return n.toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase());
+    } catch (e) {
+      return '';
+    }
+  }
+
+  /**
+   * La página principal es un frameset: cols="165px,*". Mientras el marco
+   * izquierdo muestra un paso de acceso se ensancha (o pasa a pantalla
+   * completa en pantallas angostas); al llegar al menú se restaura.
+   */
+  function ajustarMarcos(esAcceso) {
+    try {
+      if (window.name !== 'fraizq' || window.parent !== window.top) return;
+      const fs = window.top.document.querySelector('frameset');
+      if (!fs) return;
+      if (!fs.hasAttribute('data-cdoc-cols')) fs.setAttribute('data-cdoc-cols', fs.getAttribute('cols') || '165px,*');
+      const original = fs.getAttribute('data-cdoc-cols');
+      // El portal no declara viewport: en celular se ve a ancho de escritorio.
+      // Solo durante el acceso se usa el ancho del dispositivo.
+      const topDoc = window.top.document;
+      let meta = topDoc.getElementById('cdoc-viewport');
+      if (esAcceso && !meta && !topDoc.querySelector('meta[name="viewport"]')) {
+        meta = topDoc.createElement('meta');
+        meta.id = 'cdoc-viewport';
+        meta.name = 'viewport';
+        meta.content = 'width=device-width, initial-scale=1';
+        (topDoc.head || topDoc.documentElement).appendChild(meta);
+      } else if (!esAcceso && meta) {
+        meta.remove();
+      }
+      const aplicar = () => {
+        if (!esAcceso) { fs.setAttribute('cols', original); return; }
+        const ancho = Math.min(window.top.innerWidth, window.top.screen.width || Infinity);
+        fs.setAttribute('cols', ancho < 760 ? '*,0' : '420,*');
+      };
+      aplicar();
+      if (esAcceso) window.top.addEventListener('resize', aplicar);
+    } catch (e) {
+      /* marco de otro origen: nada que hacer */
+    }
+  }
+
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  function icono(trazos, tam) {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', tam || 20);
+    svg.setAttribute('height', tam || 20);
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('aria-hidden', 'true');
+    trazos.forEach(d => {
+      const p = document.createElementNS(SVG_NS, 'path');
+      p.setAttribute('d', d);
+      svg.appendChild(p);
+    });
+    return svg;
+  }
+  const ICONO_BIRRETE = ['M22 10 12 5 2 10l10 5 10-5Z', 'M6 12v5c3 2 9 2 12 0v-5', 'M22 10v6'];
+  const ICONO_OJO = ['M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z', 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z'];
+  const ICONO_OJO_NO = ['M3 3l18 18', 'M10.6 5.1A10 10 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4.2', 'M6.6 6.6C3.8 8.4 2 12 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.4-1.6', 'M9.9 9.9a3 3 0 0 0 4.2 4.2'];
+
+  function moduloAcceso(acc) {
+    const { form, campo, cfg } = acc;
+    const enviar = Array.from(form.elements).find(e => e.type === 'submit');
+    document.documentElement.classList.add('cdoc-acceso');
+    inyectarEstilosAcceso();
+    if (!$('meta[name="viewport"]')) {
+      const meta = el('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1' });
+      (document.head || document.documentElement).appendChild(meta);
+    }
+
+    // Textos sueltos ("Usuario:", "Contraseña:") y saltos de línea del formulario original
+    Array.from(form.querySelectorAll('br')).forEach(b => b.remove());
+    const sueltos = document.createTreeWalker(form, NodeFilter.SHOW_TEXT);
+    const vaciar = [];
+    while (sueltos.nextNode()) if (sueltos.currentNode.textContent.trim()) vaciar.push(sueltos.currentNode);
+    vaciar.forEach(n => { n.textContent = ''; });
+
+    // Campo con etiqueta
+    if (!campo.id) campo.id = 'cdoc-' + acc.nombre;
+    campo.removeAttribute('style');
+    campo.setAttribute('autocomplete', cfg.auto);
+    campo.setAttribute('autocapitalize', 'off');
+    campo.setAttribute('spellcheck', 'false');
+    const caja = el('div', { class: 'cdoc-acc-campo' });
+    campo.parentNode.insertBefore(el('label', { class: 'cdoc-acc-etq', for: campo.id, text: cfg.etiqueta }), campo);
+    campo.parentNode.insertBefore(caja, campo);
+    caja.appendChild(campo);
+
+    if (campo.type === 'password') {
+      caja.classList.add('cdoc-con-ojo');
+      const ojo = el('button', { type: 'button', class: 'cdoc-acc-ojo', 'aria-label': 'Mostrar contraseña', 'aria-pressed': 'false', title: 'Mostrar contraseña' });
+      ojo.appendChild(icono(ICONO_OJO));
+      ojo.addEventListener('click', () => {
+        const mostrar = campo.type === 'password';
+        campo.type = mostrar ? 'text' : 'password';
+        ojo.replaceChildren(icono(mostrar ? ICONO_OJO_NO : ICONO_OJO));
+        ojo.setAttribute('aria-label', mostrar ? 'Ocultar contraseña' : 'Mostrar contraseña');
+        ojo.setAttribute('aria-pressed', String(mostrar));
+        campo.focus();
+      });
+      caja.appendChild(ojo);
+
+      const mayus = el('div', { class: 'cdoc-acc-mayus', role: 'status', hidden: true, text: 'Bloq Mayús está activado.' });
+      caja.insertAdjacentElement('afterend', mayus);
+      const revisar = e => { if (typeof e.getModifierState === 'function') mayus.hidden = !e.getModifierState('CapsLock'); };
+      campo.addEventListener('keydown', revisar);
+      campo.addEventListener('keyup', revisar);
+      campo.addEventListener('blur', () => { mayus.hidden = true; });
+    }
+
+    if (enviar) {
+      enviar.removeAttribute('style');
+      enviar.classList.add('cdoc-acc-btn');
+    }
+
+    // Evitar doble envío sin deshabilitar el botón (su name/value se envía al servidor)
+    let enviado = false;
+    form.addEventListener('submit', e => {
+      if (enviado) { e.preventDefault(); return; }
+      enviado = true;
+      if (enviar) enviar.classList.add('cdoc-enviando');
+      setTimeout(() => { enviado = false; if (enviar) enviar.classList.remove('cdoc-enviando'); }, 15000);
+    });
+
+    // Tarjeta
+    const nombre = cfg.paso === 2 || acc.nombre === 'passwordCC' ? nombreDocente() : '';
+    const logo = el('div', { class: 'cdoc-acc-logo' });
+    logo.appendChild(icono(ICONO_BIRRETE, 22));
+    const pie = el('p', { class: 'cdoc-acc-pie', text: 'CONECT Mod (no oficial). Tus datos se envían únicamente al portal del instituto.' });
+    const tarjeta = el('main', { class: 'cdoc-acc-tarjeta' }, [
+      el('div', { class: 'cdoc-acc-marca' }, [
+        logo,
+        el('div', {}, [el('b', { text: 'CONECT Docentes' }), el('span', { text: 'ITS Purísima del Rincón' })])
+      ]),
+      cfg.paso ? el('div', { class: 'cdoc-acc-paso', text: 'Paso ' + cfg.paso + ' de 2' }) : null,
+      el('h1', { class: 'cdoc-acc-titulo', text: cfg.titulo }),
+      el('p', { class: 'cdoc-acc-texto', text: (nombre ? 'Hola, ' + nombre + '. ' : '') + cfg.texto })
+    ]);
+    tarjeta.appendChild(form);
+    if (cfg.volver) tarjeta.appendChild(el('a', { class: 'cdoc-acc-volver', href: cfg.volver, text: '¿No eres tú? Cambiar de usuario' }));
+    tarjeta.appendChild(pie);
+    document.body.appendChild(el('div', { class: 'cdoc-acc-fondo' }, [tarjeta]));
+
+    // Título de la pestaña y foco
+    try { if (window.top === window || window.name === 'fraizq') window.top.document.title = 'CONECT Docentes · Acceso'; } catch (e) { /* nada */ }
+    setTimeout(() => { try { campo.focus({ preventScroll: true }); } catch (e) { campo.focus(); } }, 50);
+  }
+
+  const CSS_ACCESO = `
+html.cdoc-acceso{--a-p:#1b396a;--a-p2:#132a4f;--a-ac:#8a2036;--a-f:#f3f5f9;--a-s:#fff;--a-b:#dfe5ee;--a-t:#1a2433;--a-ts:#4b5768;--a-in:#fff;--a-en:#1d4f9e;--a-foco:rgba(29,79,158,.3);--a-av:#8f5200;--a-sombra:0 12px 32px rgba(16,24,40,.10);color-scheme:light}
+@media (prefers-color-scheme:dark){html.cdoc-acceso{--a-p:#3a64aa;--a-p2:#4a75bd;--a-ac:#f0a3b3;--a-f:#0e141d;--a-s:#151d29;--a-b:#2a3546;--a-t:#e5e9f0;--a-ts:#a9b3c2;--a-in:#1a2331;--a-en:#9cbcf0;--a-foco:rgba(156,188,240,.35);--a-av:#f5c06a;--a-sombra:0 12px 32px rgba(0,0,0,.5);color-scheme:dark}}
+html.cdoc-acceso,html.cdoc-acceso body{margin:0!important;padding:0!important;min-height:100%;background:var(--a-f)!important}
+html.cdoc-acceso body>:not(.cdoc-acc-fondo){display:none!important}
+.cdoc-acc-fondo{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px 16px;box-sizing:border-box;font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:var(--a-t);text-align:left}
+.cdoc-acc-fondo *{box-sizing:border-box}
+.cdoc-acc-tarjeta{width:100%;max-width:350px;background:var(--a-s);border:1px solid var(--a-b);border-radius:16px;padding:28px 24px 18px;box-shadow:var(--a-sombra)}
+.cdoc-acc-marca{display:flex;align-items:center;gap:12px;margin-bottom:24px}
+.cdoc-acc-logo{flex:none;width:42px;height:42px;border-radius:12px;background:var(--a-p);color:#fff;display:grid;place-items:center}
+.cdoc-acc-marca b{display:block;font-size:16px;line-height:1.2}
+.cdoc-acc-marca span{display:block;font-size:12.5px;color:var(--a-ts)}
+.cdoc-acc-paso{font-size:11.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--a-ac)}
+.cdoc-acc-titulo{font-size:22px;line-height:1.25;margin:2px 0 6px;font-weight:700;color:var(--a-t)}
+.cdoc-acc-texto{margin:0 0 20px;color:var(--a-ts);font-size:14px}
+.cdoc-acc-tarjeta form{margin:0}
+.cdoc-acc-tarjeta center{display:block;text-align:left}
+.cdoc-acc-tarjeta center>h3,.cdoc-acc-tarjeta center>h4,.cdoc-acc-tarjeta img{display:none}
+.cdoc-acc-etq{display:block;font-weight:600;font-size:13px;margin-bottom:6px;color:var(--a-t)}
+.cdoc-acc-campo{position:relative;margin-bottom:18px}
+.cdoc-acc-campo input{display:block;width:100%!important;font:inherit;font-size:16px;padding:11px 12px;border:1px solid var(--a-b);border-radius:10px;background:var(--a-in);color:var(--a-t);outline:none;transition:border-color .15s,box-shadow .15s}
+.cdoc-acc-campo input:focus{border-color:var(--a-p);box-shadow:0 0 0 4px var(--a-foco)}
+.cdoc-acc-campo.cdoc-con-ojo input{padding-right:48px}
+.cdoc-acc-ojo{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:38px;height:38px;border:0;border-radius:8px;background:transparent;color:var(--a-ts);cursor:pointer;display:grid;place-items:center;padding:0}
+.cdoc-acc-ojo:hover{background:var(--a-f);color:var(--a-t)}
+.cdoc-acc-ojo:focus-visible,.cdoc-acc-volver:focus-visible{outline:3px solid var(--a-foco);outline-offset:2px}
+.cdoc-acc-mayus{font-size:12.5px;color:var(--a-av);margin:-10px 0 14px}
+.cdoc-acc-mayus[hidden]{display:none}
+.cdoc-acc-btn{display:block;width:100%;font:inherit;font-weight:700;font-size:15px;padding:12px;border:0;border-radius:10px;background:var(--a-p);color:#fff;cursor:pointer;-webkit-appearance:none;appearance:none;transition:background .15s}
+.cdoc-acc-btn:hover{background:var(--a-p2)}
+.cdoc-acc-btn:focus-visible{outline:3px solid var(--a-foco);outline-offset:2px}
+.cdoc-acc-btn.cdoc-enviando{opacity:.6;cursor:progress;pointer-events:none}
+.cdoc-acc-volver{display:inline-block;margin-top:14px;font-size:13px;color:var(--a-en);text-decoration:none}
+.cdoc-acc-volver:hover{text-decoration:underline}
+.cdoc-acc-pie{margin:22px 0 0;padding-top:14px;border-top:1px solid var(--a-b);font-size:11.5px;color:var(--a-ts)}
+`;
+
+  function inyectarEstilosAcceso() {
+    if ($('#cdoc-estilos-acceso')) return;
+    const st = el('style', { id: 'cdoc-estilos-acceso' });
+    st.textContent = CSS_ACCESO;
+    (document.head || document.documentElement).appendChild(st);
+  }
+
+  /* ------------------------------------------------------------------------
      Arranque
      ------------------------------------------------------------------------ */
   function iniciar() {
+    const acceso = detectarAcceso();
+    // En el marco izquierdo: ensanchar durante el acceso, restaurar al llegar al menú
+    if (acceso) ajustarMarcos(true);
+    else if ($('img[src*="mnu_"]')) ajustarMarcos(false);
+    if (acceso) {
+      try { moduloAcceso(acceso); } catch (err) { console.error('[CONECT Mod Docentes] Acceso:', err); }
+      return;
+    }
+
     const campos = $$('input[name]').filter(i => RE_CAMPO.test(i.name));
     if (!campos.length || !campos[0].form) return;
     try {

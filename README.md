@@ -7,7 +7,7 @@ no se envían datos a ningún servidor externo.
 | Versión | Portal | Qué hace |
 |---|---|---|
 | [Estudiantes](ESTUDIANTES) | `purisima.tecnm.mx/conect/` | Rediseño moderno y responsivo, modo oscuro, horario visual y resumen académico. |
-| [Docentes](DOCENTES) | `purisima.tecnm.mx/conect_docentes/` | Captura de calificaciones parciales **subiendo un Excel**, plantilla descargable y corrección del formulario de captura (que solo funcionaba en Internet Explorer). |
+| [Docentes](DOCENTES) | `purisima.tecnm.mx/conect_docentes/` | Pantallas de acceso rediseñadas (modo oscuro, adaptadas a celular), captura de calificaciones parciales **subiendo un Excel**, plantilla descargable y corrección del formulario de captura (que solo funcionaba en Internet Explorer). |
 
 ## Instalación
 
