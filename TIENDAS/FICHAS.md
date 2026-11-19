@@ -14,9 +14,9 @@ Sitio / soporte: https://github.com/Botello-Santos/conect-mod
 Captura calificaciones subiendo un Excel y usa un portal CONECT docente rediseñado, con modo oscuro. ITS Purísima del Rincón.
 
 **Descripción:**
-Extensión NO oficial para el portal CONECT de docentes del Instituto Tecnológico Superior de Purísima del Rincón (purisima.tecnm.mx/conect_docentes).
 
-CAPTURA DE CALIFICACIONES DESDE EXCEL
+
+CAPTUExtensión NO oficial para el portal CONECT de docentes del Instituto Tecnológico Superior de Purísima del Rincón (purisima.tecnm.mx/conect_docentes).RA DE CALIFICACIONES DESDE EXCEL
 • Descarga una plantilla con la lista del grupo ya llenada: básica (una columna por indicador) o mejorada (los 3 parciales, cada trabajo por separado, puntos menos, puntos extra por criterio con tope de 100, asistencia y segunda oportunidad).
 • Sube tu archivo (.xlsx, .xls, .ods o .csv): los alumnos se identifican por número de control y las calificaciones se asignan solas.
 • Vista previa antes/después, validación (0–100, NC, NP) y el mismo redondeo que el portal. Nada se guarda hasta que presionas Guardar.

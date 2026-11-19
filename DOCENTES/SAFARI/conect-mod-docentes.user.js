@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CONECT Mod Docentes - Captura desde Excel
 // @namespace    https://purisima.tecnm.mx/conect_docentes/
-// @version      1.2.0
+// @version      1.2.1
 // @description  Rediseño del portal CONECT de docentes del ITSPR (modo oscuro, horario visual, grupos) y captura de calificaciones desde Excel. Todo se procesa localmente.
 // @author       Equipo CONECT Mod
 // @match        https://purisima.tecnm.mx/conect_docentes/*
@@ -774,7 +774,8 @@ html.cdoc-cambiando-tema *,html.cdoc-cambiando-tema *::before{transition:backgro
       x.horas += c.fin - c.ini;
       x.sesiones.push(DIAS[c.dia].slice(0, 2) + ' ' + c.hIni + '\u2013' + c.hFin + ' (' + c.salon + ')');
     });
-    const totalHoras = Array.from(porMateria.values()).reduce((a, x) => a + x.horas, 0);
+    // Horas reales frente a grupo: cada bloque del calendario una sola vez (las clases compartidas no se duplican)
+    const totalHoras = bloques.reduce((a, b) => a + (b.fin - b.ini), 0);
     const lista = el('div', { class: 'cdoc-lista-materias' }, Array.from(porMateria.entries()).map(([m, x]) =>
       el('div', { class: 'cdoc-materia-fila cdoc-tono-' + tono(m) }, [
         el('span', { class: 'cdoc-punto' }),
