@@ -511,7 +511,8 @@
 
   const escXml = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-  function xmlEstilos(specs) {
+  function xmlEstilos(specs, dxfs) {
+    dxfs = dxfs || [];
     const fuentes = ['<font><sz val="11"/><color theme="1"/><name val="Calibri"/><family val="2"/></font>'];
     const idFuente = new Map();
     const rellenos = ['<fill><patternFill patternType="none"/></fill>', '<fill><patternFill patternType="gray125"/></fill>'];
@@ -559,12 +560,12 @@
       '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
       '<cellXfs count="' + xfs.length + '">' + xfs.join('') + '</cellXfs>' +
       '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
-      '<dxfs count="0"/><tableStyles count="0" defaultTableStyle="TableStyleMedium9" defaultPivotStyle="PivotStyleMedium4"/>' +
+      '<dxfs count="' + dxfs.length + '">' + dxfs.map(d => '<dxf>' + (d.color || d.b ? '<font>' + (d.b ? '<b/>' : '') + (d.color ? '<color rgb="FF' + d.color + '"/>' : '') + '</font>' : '') + (d.fill ? '<fill><patternFill patternType="solid"><bgColor rgb="FF' + d.fill + '"/></patternFill></fill>' : '') + '</dxf>').join('') + '</dxfs><tableStyles count="0" defaultTableStyle="TableStyleMedium9" defaultPivotStyle="PivotStyleMedium4"/>' +
       '</styleSheet>';
   }
 
   /** Agrega s="" a las celdas (creando las vacías que tengan estilo), alturas y panel fijo. */
-  function estilizarHojaXml(xml, meta, idDe) {
+  function estilizarHojaXml(xml, meta, idDe, idDxf) {
     const porFila = new Map();
     meta.celdas.forEach((spec, addr) => {
       const d = XLSX.utils.decode_cell(addr);
@@ -608,6 +609,23 @@
         ' topLeftCell="' + tl + '" activePane="' + panel + '" state="frozen"/><selection pane="' + panel + '" activeCell="' + tl + '" sqref="' + tl + '"/>';
       xml = xml.replace(/<sheetView\b([^>]*?)\/>/, '<sheetView$1>' + pane + '</sheetView>');
     }
+    // Formato condicional y validación de datos (van después de mergeCells, en ese orden)
+    let extra = '';
+    meta.condicionales.forEach((cf, i) => {
+      extra += '<conditionalFormatting sqref="' + cf.sqref + '"><cfRule type="expression" dxfId="' + idDxf(cf.dxf) + '" priority="' + (i + 1) + '"' +
+        (cf.parar ? ' stopIfTrue="1"' : '') + '><formula>' + escXml(cf.formula) + '</formula></cfRule></conditionalFormatting>';
+    });
+    if (meta.validaciones.length) {
+      extra += '<dataValidations count="' + meta.validaciones.length + '">' + meta.validaciones.map(v =>
+        '<dataValidation type="' + v.tipo + '" allowBlank="1" showInputMessage="1" showErrorMessage="1"' +
+        (v.titulo ? ' errorTitle="' + escXml(v.titulo) + '" error="' + escXml(v.error || '') + '" promptTitle="' + escXml(v.titulo) + '" prompt="' + escXml(v.ayuda || '') + '"' : '') +
+        (v.tipo === 'whole' ? ' operator="between"' : '') + ' sqref="' + v.sqref + '"><formula1>' + escXml(v.f1) + '</formula1>' +
+        (v.f2 != null ? '<formula2>' + escXml(v.f2) + '</formula2>' : '') + '</dataValidation>').join('') + '</dataValidations>';
+    }
+    if (extra) {
+      if (xml.includes('</mergeCells>')) xml = xml.replace('</mergeCells>', '</mergeCells>' + extra);
+      else xml = xml.replace('</sheetData>', '</sheetData>' + extra);
+    }
     return xml;
   }
 
@@ -621,27 +639,36 @@
       if (!indice.has(k)) { indice.set(k, specs.length); specs.push(spec); }
       return indice.get(k);
     };
+    const dxfs = [];
+    const indiceDxf = new Map();
+    const idDxf = d => {
+      const k = JSON.stringify(d);
+      if (!indiceDxf.has(k)) { indiceDxf.set(k, dxfs.length); dxfs.push(d); }
+      return indiceDxf.get(k);
+    };
     const leer = f => new TextDecoder('utf-8').decode(f.content);
     const escribir = (f, texto) => { f.content = new TextEncoder().encode(texto); f.size = f.content.length; };
     metas.forEach((meta, i) => {
       if (!meta) return;
       const f = CFB.find(zip, '/xl/worksheets/sheet' + (i + 1) + '.xml');
-      if (f) escribir(f, estilizarHojaXml(leer(f), meta, idDe));
+      if (f) escribir(f, estilizarHojaXml(leer(f), meta, idDe, idDxf));
     });
     const st = CFB.find(zip, '/xl/styles.xml');
-    escribir(st, xmlEstilos(specs));
+    escribir(st, xmlEstilos(specs, dxfs));
     return new Uint8Array(CFB.write(zip, { fileType: 'zip', type: 'array' }));
   }
 
   /** Metadatos de estilo de una hoja: celdas \u2192 estilo, alturas de fila y panel fijo. */
   function nuevoMeta() {
-    const meta = { celdas: new Map(), altos: {}, fijo: null };
+    const meta = { celdas: new Map(), altos: {}, fijo: null, condicionales: [], validaciones: [] };
     return {
       meta,
       est(r, c, spec) { meta.celdas.set(XLSX.utils.encode_cell({ r, c }), spec); },
       rango(r1, c1, r2, c2, spec) { for (let r = r1; r <= r2; r++) for (let c = c1; c <= c2; c++) this.est(r, c, spec); },
       alto(r, ht) { meta.altos[r + 1] = ht; },
-      fijar(filas, cols) { meta.fijo = { filas, cols }; }
+      fijar(filas, cols) { meta.fijo = { filas, cols }; },
+      condicional(sqref, formula, dxf, parar) { meta.condicionales.push({ sqref, formula, dxf, parar }); },
+      validar(v) { meta.validaciones.push(v); }
     };
   }
 
@@ -805,7 +832,166 @@
     h.estilo.fijar(FILA_DATOS, 3);
   }
 
-  function descargarPlantillaMejorada(modelo) {
+  /* ------------------------------------------------------------------------
+     Horario y fechas del grupo ("Detalle de mis materias", cat_detmaterias.asp)
+     Cada materia es una tabla: "Grupo/Materia : 2V1A - ...", los días como
+     <B>Lu</B> 07:00-09:00-D04 y las fechas "1 | Aplicar | Del dd/mm/aaaa al dd/mm/aaaa".
+     ------------------------------------------------------------------------ */
+  const DIA_SEMANA = { LU: 1, MA: 2, MI: 3, JU: 4, VI: 5, SA: 6 };
+
+  function fechaDMA(t) {
+    const m = /(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(t);
+    return m ? new Date(+m[3], +m[2] - 1, +m[1]) : null;
+  }
+
+  function parsearDetalle(html, clave) {
+    const objetivo = normalizar(clave);
+    const tablas = html.split(/<table\b/i).slice(1).filter(t => /Grupo\/Materia/i.test(t));
+    const leerParciales = t => {
+      const out = [];
+      const rePar = /<td[^>]*>\s*(\d)\s*<\/td>\s*<td[^>]*>\s*(?:<b>)?\s*Aplicar\s*(?:<\/b>)?\s*<\/td>\s*<td[^>]*>([^<]*)<\/td>/gi;
+      let m;
+      while ((m = rePar.exec(t))) {
+        const fechas = m[2].match(/\d{1,2}\/\d{1,2}\/\d{4}/g) || [];
+        if (fechas.length === 2) out.push({ n: +m[1], ini: fechaDMA(fechas[0]), fin: fechaDMA(fechas[1]) });
+      }
+      return out.sort((a, b) => a.n - b.n);
+    };
+    const tabla = tablas.find(t => {
+      const m = /Grupo\/Materia[\s\S]*?<td[^>]*>([\s\S]*?)<\/td>/i.exec(t);
+      return m && normalizar(m[1].replace(/<[^>]+>/g, ' ')).startsWith(objetivo);
+    });
+    // Días: solo si el grupo aparece (el portal a veces mezcla salones de otro grupo; el docente los confirma)
+    const dias = new Set();
+    if (tabla) {
+      const reDia = /<b>\s*(Lu|Ma|Mi|Ju|Vi|Sa)\s*<\/b>\s*\d\d:\d\d-\d\d:\d\d/gi;
+      let m;
+      while ((m = reDia.exec(tabla))) dias.add(DIA_SEMANA[m[1].toUpperCase()]);
+    }
+    // Fechas de parciales: son del calendario institucional; si el grupo no aparece se toman de otra materia
+    let parciales = tabla ? leerParciales(tabla) : [];
+    if (!parciales.length) parciales = (tablas.map(leerParciales).find(p => p.length)) || [];
+    if (!parciales.length) return null;
+    return { dias, parciales, grupoEncontrado: !!tabla };
+  }
+
+  async function leerDetalleGrupo(clave) {
+    const r = await fetch('cat_detmaterias.asp' + location.search, { credentials: 'include' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const html = new TextDecoder('windows-1252').decode(await r.arrayBuffer());
+    return parsearDetalle(html, clave);
+  }
+
+  /** Fecha de inicio sugerida: ~5 semanas antes del primer parcial, en lunes. */
+  function inicioSugerido(detalle) {
+    const p1 = detalle && detalle.parciales[0];
+    const base = p1 ? new Date(p1.ini.getFullYear(), p1.ini.getMonth(), p1.ini.getDate() - 35) : new Date();
+    const dow = base.getDay();
+    base.setDate(base.getDate() - ((dow + 6) % 7));
+    return base;
+  }
+
+  /** Lista de clases entre el inicio y el fin del último parcial, con el parcial al que pertenecen. */
+  function generarSesiones(inicio, detalle) {
+    if (!detalle || !inicio || !detalle.parciales.length) return null;
+    const fin = detalle.parciales[detalle.parciales.length - 1].fin;
+    const sesiones = [];
+    for (let d = new Date(inicio.getFullYear(), inicio.getMonth(), inicio.getDate()); d <= fin; d.setDate(d.getDate() + 1)) {
+      if (!detalle.dias.has(d.getDay())) continue;
+      const p = detalle.parciales.find(x => d <= x.fin);
+      sesiones.push({ fecha: new Date(d), parcial: p ? p.n : detalle.parciales.length });
+    }
+    return sesiones.length ? sesiones : null;
+  }
+
+  const serialExcel = d => (Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) - Date.UTC(1899, 11, 30)) / 86400000;
+
+  function hojaAsistencia(modelo, sesiones) {
+    const ha = nuevaHoja();
+    const n = modelo.alumnos.length;
+    const F_ASUETO = 2;          // fila 3 de Excel
+    const ini = FILA_DATOS;      // primera fila de alumnos (fila 4)
+    const fin = FILA_DATOS + n - 1;
+    const filaDia = fin + 1;     // "Faltas del día"
+    const lista = sesiones || Array.from({ length: 40 }, () => ({ fecha: null, parcial: 0 }));
+    const c0 = 3;
+    const c1 = c0 + lista.length - 1;
+    const cSes = c1 + 1, cFal = c1 + 2, cPor = c1 + 3;
+    const L = c => letraColumna(c);
+
+    // Encabezados fijos
+    ha.put(0, 0, 'ASISTENCIA · 0 = asistió \u2714 · 1 = faltó \u2718'); ha.merge(0, 0, 0, 2);
+    ha.estilo.rango(0, 0, 0, 2, EST.encabezado);
+    ['Equipo', 'No. Control', 'Nombre'].forEach((t, i) => { ha.put(1, i, t); ha.estilo.est(1, i, EST.encabezado); });
+    ha.put(F_ASUETO, 0, 'Asueto: elige \u2612 en el día que no hubo clase \u2192'); ha.merge(F_ASUETO, 0, F_ASUETO, 2);
+    ha.estilo.rango(F_ASUETO, 0, F_ASUETO, 2, { fill: 'EDEDED', color: '595959', i: 1, h: 'right', sz: 10 });
+    ha.ancho(0, 8); ha.ancho(1, 14); ha.ancho(2, 36);
+
+    // Una columna por sesión
+    let grupoIni = c0;
+    lista.forEach((s, k) => {
+      const c = c0 + k;
+      const p = s.parcial || 1;
+      if (s.fecha) {
+        ha.put(1, c, serialExcel(s.fecha));
+        ha.estilo.est(1, c, { fill: PALETA_PARCIAL[p].cla, color: PALETA_PARCIAL[p].txt, b: 1, sz: 9, h: 'center', wrap: 1, fmt: '[$-es-MX]ddd dd/mm' });
+      } else {
+        ha.put(1, c, 'S' + (k + 1));
+        ha.estilo.est(1, c, EST.etiqueta(1));
+      }
+      ha.estilo.est(F_ASUETO, c, { fill: 'F7F7F7', color: '7F7F7F', h: 'center', fmt: ';;;"\u2612"' });
+      ha.estilo.rango(ini, c, fin, c, { h: 'center', b: 1, fmt: '[Red]"\u2718";[Red]"\u2718";[Color10]"\u2714"' });
+      ha.put(filaDia, c, { f: 'IF(' + L(c) + '$' + (F_ASUETO + 1) + '<>"","",IF(COUNT(' + L(c) + (ini + 1) + ':' + L(c) + (fin + 1) + ')=0,"",COUNTIF(' + L(c) + (ini + 1) + ':' + L(c) + (fin + 1) + ',1)))' });
+      ha.estilo.est(filaDia, c, { fill: 'FDECEC', color: 'C00000', b: 1, h: 'center' });
+      ha.ancho(c, 7);
+      // Encabezado de parcial (agrupa las sesiones consecutivas del mismo parcial)
+      const sig = lista[k + 1];
+      if (!sig || (sig.parcial || 1) !== p) {
+        ha.put(0, grupoIni, sesiones ? 'PARCIAL ' + p : 'SESIONES (escribe la fecha de cada clase)');
+        ha.merge(0, grupoIni, 0, c);
+        ha.estilo.rango(0, grupoIni, 0, c, EST.parcial(sesiones ? p : 1));
+        grupoIni = c + 1;
+      }
+    });
+
+    // Resumen por alumno: sesiones registradas (sin asuetos), faltas y % de faltas
+    const asueto = '$' + L(c0) + '$' + (F_ASUETO + 1) + ':$' + L(c1) + '$' + (F_ASUETO + 1);
+    [[cSes, 'SESIONES', 10], [cFal, 'FALTAS', 9], [cPor, '% FALTAS', 10]].forEach(([c, t, w]) => {
+      ha.put(0, c, t); ha.merge(0, c, F_ASUETO, c); ha.ancho(c, w);
+      ha.estilo.rango(0, c, F_ASUETO, c, c === cPor ? EST.menosEnc : EST.finalEnc);
+    });
+    modelo.alumnos.forEach((al, i) => {
+      const r = ini + i;
+      const fila = L(c0) + (r + 1) + ':' + L(c1) + (r + 1);
+      ha.put(r, 1, al.control); ha.put(r, 2, al.nombre);
+      ha.estilo.est(r, 0, EST.centro); ha.estilo.est(r, 1, EST.control); ha.estilo.est(r, 2, EST.nombre);
+      ha.put(r, cSes, { f: 'SUMPRODUCT((' + asueto + '="")*(' + fila + '<>""))' });
+      ha.put(r, cFal, { f: 'SUMPRODUCT((' + asueto + '="")*(' + fila + '=1))' });
+      ha.put(r, cPor, { f: 'IF(' + L(cSes) + (r + 1) + '=0,"",' + L(cFal) + (r + 1) + '/' + L(cSes) + (r + 1) + ')' });
+      ha.estilo.est(r, cSes, { fill: 'F2F2F2', h: 'center', fmt: '0' });
+      ha.estilo.est(r, cFal, { fill: 'F2F2F2', h: 'center', b: 1, fmt: '0' });
+      ha.estilo.est(r, cPor, { fill: 'FFF2CC', h: 'center', b: 1, fmt: '0%' });
+    });
+    ha.put(filaDia, 2, 'Faltas del día');
+    ha.estilo.est(filaDia, 2, { fill: 'FDECEC', color: 'C00000', b: 1, h: 'right' });
+    ha.estilo.rango(filaDia, 0, filaDia, 1, { fill: 'FDECEC' });
+
+    // Días de asueto en gris; 20 % o más de faltas en rojo, 10 % o más en ámbar
+    const rangoDatos = L(c0) + (ini + 1) + ':' + L(c1) + (filaDia + 1);
+    ha.estilo.condicional(rangoDatos, L(c0) + '$' + (F_ASUETO + 1) + '<>""', { fill: 'D9D9D9', color: 'A6A6A6' }, true);
+    const rangoPor = L(cPor) + (ini + 1) + ':' + L(cPor) + (fin + 1);
+    ha.estilo.condicional(rangoPor, 'AND(' + L(cPor) + (ini + 1) + '<>"",' + L(cPor) + (ini + 1) + '>=0.2)', { fill: 'F4CCCC', color: '9C0006', b: 1 }, true);
+    ha.estilo.condicional(rangoPor, 'AND(' + L(cPor) + (ini + 1) + '<>"",' + L(cPor) + (ini + 1) + '>=0.1)', { fill: 'FFE699', color: '7F6000' });
+    ha.estilo.validar({ tipo: 'list', sqref: L(c0) + (F_ASUETO + 1) + ':' + L(c1) + (F_ASUETO + 1), f1: '"\u2612"', titulo: 'Asueto', ayuda: 'Elige \u2612 si ese día no hubo clase: no cuenta para la asistencia.', error: 'Solo se puede elegir \u2612 o dejarlo vacío.' });
+    ha.estilo.validar({ tipo: 'whole', sqref: L(c0) + (ini + 1) + ':' + L(c1) + (fin + 1), f1: '0', f2: '1', titulo: 'Pase de lista', ayuda: '0 = asistió (\u2714)  ·  1 = faltó (\u2718)', error: 'Escribe 0 si asistió o 1 si faltó.' });
+
+    ha.estilo.alto(0, 22); ha.estilo.alto(1, 30); ha.estilo.alto(F_ASUETO, 20);
+    ha.estilo.fijar(FILA_DATOS, 3);
+    return ha;
+  }
+
+  function descargarPlantillaMejorada(modelo, opciones) {
+    opciones = opciones || {};
     const inds = modelo.indicadores;
     const n = modelo.alumnos.length;
     const ultima = FILA_DATOS + n - 1;
@@ -905,30 +1091,9 @@
       h.estilo.rango(0, ini, 0, c - 1, EST.parcial(p));
     }
 
-    // --- Asistencia (1 = falta)
-    const ha = nuevaHoja();
-    ha.put(0, 0, 'ASISTENCIA (escribe la fecha arriba de cada sesión; 1 = falta)'); ha.merge(0, 0, 0, 2);
-    ha.estilo.rango(0, 0, 0, 2, EST.encabezado);
-    ['Equipo', 'No. Control', 'Nombre'].forEach((t, i) => { ha.put(1, i, t); ha.estilo.est(1, i, EST.encabezado); });
-    ha.ancho(0, 8); ha.ancho(1, 14); ha.ancho(2, 36);
-    const SESIONES = 40;
-    for (let s = 0; s < SESIONES; s++) {
-      ha.put(1, 3 + s, 'S' + (s + 1)); ha.ancho(3 + s, 6);
-      ha.estilo.est(0, 3 + s, EST.fecha); ha.estilo.est(1, 3 + s, EST.etiqueta(1));
-    }
-    const colFaltas = 3 + SESIONES;
-    ha.put(1, colFaltas, 'TOTAL FALTAS'); ha.ancho(colFaltas, 12);
-    ha.estilo.rango(0, colFaltas, 1, colFaltas, EST.finalEnc);
-    modelo.alumnos.forEach((al, i) => {
-      const r = 2 + i;
-      ha.put(r, 1, al.control); ha.put(r, 2, al.nombre);
-      ha.put(r, colFaltas, { f: 'SUM(' + celda(r, 3) + ':' + celda(r, colFaltas - 1) + ')' });
-      ha.estilo.est(r, 0, EST.centro); ha.estilo.est(r, 1, EST.control); ha.estilo.est(r, 2, EST.nombre);
-      ha.estilo.rango(r, 3, r, colFaltas - 1, EST.centro);
-      ha.estilo.est(r, colFaltas, Object.assign({}, EST.final, { fmt: '0' }));
-    });
-    ha.estilo.alto(0, 30); ha.estilo.alto(1, 22);
-    ha.estilo.fijar(2, 3);
+    // --- Asistencia: una columna por clase (según el horario del grupo), casilla de asueto,
+    //     0 = asistió (\u2714 verde), 1 = faltó (\u2718 roja), y % de faltas que se actualiza al pasar lista
+    const ha = hojaAsistencia(modelo, opciones.sesiones);
 
     // --- Segunda oportunidad
     const hs = nuevaHoja();
@@ -963,6 +1128,10 @@
       ['5. En CONECT abre la captura del parcial y sube este archivo: se lee el bloque del parcial que estás capturando.'],
       ['6. El portal guarda una calificación por indicador; para que su final coincida con la tuya, la extensión reparte'],
       ['   los puntos extra/menos entre los indicadores (ninguno pasa de 100). Revisa la vista previa antes de guardar.'],
+      [],
+      ['Asistencia'],
+      ['Una columna por cada clase según tu horario. Escribe 0 si asistió (se ve \u2714 verde) o 1 si faltó (\u2718 roja).'],
+      ['Si un día no hubo clase, elige \u2612 en la fila "Asueto": la columna se pone gris y no cuenta. El % de faltas se actualiza solo (ámbar desde 10 %, rojo desde 20 %).'],
       [],
       ['Colores'],
       ['Azul = parcial 1 · Verde = parcial 2 · Morado = parcial 3 · Gris = se calcula solo · Amarillo = calificación final · Rojo = puntos menos.']
@@ -1150,6 +1319,62 @@
   /* ------------------------------------------------------------------------
      Panel
      ------------------------------------------------------------------------ */
+  /**
+   * Controles de asistencia de la plantilla mejorada: inicio del semestre y días
+   * de clase. Se prellenan con "Detalle de mis materias"; el docente confirma.
+   */
+  function controlAsistencia(modelo) {
+    const NOMBRES = ['Lu', 'Ma', 'Mi', 'Ju', 'Vi', 'Sa'];
+    let detalle = null;
+    const fecha = el('input', { type: 'date', class: 'cdoc-fecha', 'aria-label': 'Inicio del semestre' });
+    const casillas = NOMBRES.map((d, i) => {
+      const cb = el('input', { type: 'checkbox', value: String(i + 1) });
+      return { cb, nodo: el('label', { class: 'cdoc-dia' }, [cb, d]) };
+    });
+    const resumen = el('div', { class: 'cdoc-nota cdoc-asis-resumen', text: 'Buscando tu horario en "Detalle de mis materias"\u2026' });
+    const aIso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    const deIso = s => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || ''); return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null; };
+
+    function sesiones() {
+      if (!detalle) return null;
+      const dias = new Set(casillas.filter(k => k.cb.checked).map(k => +k.cb.value));
+      if (!dias.size) return null;
+      return generarSesiones(deIso(fecha.value), { dias, parciales: detalle.parciales });
+    }
+    function actualizar() {
+      if (!detalle) return;
+      const s = sesiones();
+      resumen.textContent = s
+        ? s.length + ' clases (parcial 1: ' + s.filter(x => x.parcial === 1).length + ', parcial 2: ' + s.filter(x => x.parcial === 2).length +
+          ', parcial 3: ' + s.filter(x => x.parcial === 3).length + '), hasta el ' + detalle.parciales[detalle.parciales.length - 1].fin.toLocaleDateString('es-MX') + '.'
+        : 'Marca los días que das clase a este grupo.';
+      resumen.classList.toggle('cdoc-asis-falta', !s);
+    }
+    fecha.addEventListener('change', actualizar);
+    casillas.forEach(k => k.cb.addEventListener('change', actualizar));
+
+    leerDetalleGrupo(modelo.claveGrupo).then(d => {
+      if (!d) throw new Error('sin datos');
+      detalle = d;
+      fecha.value = aIso(inicioSugerido(d));
+      casillas.forEach(k => { k.cb.checked = d.dias.has(+k.cb.value); });
+      actualizar();
+      if (!d.grupoEncontrado) resumen.textContent = 'Tu grupo no aparece en "Detalle de mis materias": marca los días que das clase.';
+      else if (d.dias.size > 3) resumen.textContent += ' Revisa los días: el portal a veces incluye horarios de otro grupo.';
+    }).catch(() => {
+      resumen.textContent = 'No se pudo leer tu horario: la hoja de asistencia tendrá 40 columnas para escribir las fechas.';
+      fecha.disabled = true;
+      casillas.forEach(k => { k.cb.disabled = true; });
+    });
+
+    const nodo = el('div', { class: 'cdoc-asis' }, [
+      el('div', { class: 'cdoc-asis-fila' }, [el('span', { class: 'cdoc-asis-etq', text: 'Asistencia desde' }), fecha]),
+      el('div', { class: 'cdoc-asis-fila' }, [el('span', { class: 'cdoc-asis-etq', text: 'Días de clase' })].concat(casillas.map(k => k.nodo))),
+      resumen
+    ]);
+    return { nodo, sesiones };
+  }
+
   function construirPanel(modelo) {
     const ui = {};
     let libro = null;
@@ -1171,6 +1396,8 @@
     ui.acciones = el('div', { class: 'cdoc-acciones cdoc-oculto' });
     ui.mensaje = el('div', { class: 'cdoc-mensaje', role: 'status', 'aria-live': 'polite' });
     ui.reloj = chip('Sesión: 18:00', 'cdoc-chip-reloj');
+    const asistencia = controlAsistencia(modelo);
+    ui.asistencia = asistencia.nodo;
 
     const panel = el('section', { class: 'cdoc-panel', 'aria-label': 'Captura desde Excel' }, [
       el('div', { class: 'cdoc-cab' }, [
@@ -1200,8 +1427,9 @@
             el('div', { class: 'cdoc-plantilla cdoc-plantilla-destacada' }, [
               el('b', { text: 'Mejorada' }),
               el('span', { text: 'Los 3 parciales, cada trabajo por separado, puntos menos, hoja de puntos extra (tope 100), asistencia y segunda oportunidad.' }),
+              ui.asistencia,
               el('button', { type: 'button', class: 'cdoc-btn', onclick: () => {
-                try { descargarPlantillaMejorada(modelo); } catch (err) { avisar('No se pudo generar la plantilla: ' + err.message, 'error'); }
+                try { descargarPlantillaMejorada(modelo, { sesiones: asistencia.sesiones() }); } catch (err) { avisar('No se pudo generar la plantilla: ' + err.message, 'error'); }
               } }, 'Descargar mejorada')
             ])
           ])
@@ -1521,6 +1749,14 @@
 .cdoc-plantilla span{color:var(--ts);font-size:12.5px;flex:1}
 .cdoc-plantilla .cdoc-btn{align-self:flex-start;margin-top:6px}
 .cdoc-plantilla-destacada{border-color:var(--p);background:var(--ps)}
+.cdoc-asis{margin-top:8px;padding-top:8px;border-top:1px dashed var(--b);display:flex;flex-direction:column;gap:6px}
+.cdoc-asis-fila{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.cdoc-asis-etq{font-size:12.5px;font-weight:600;color:var(--t);min-width:108px}
+.cdoc-fecha{font:inherit;font-size:13px;padding:4px 8px;border:1px solid var(--b);border-radius:7px;background:var(--sup);color:var(--t)}
+.cdoc-dia{display:inline-flex;align-items:center;gap:3px;font-size:12.5px;padding:3px 8px;border:1px solid var(--b);border-radius:999px;background:var(--sup);cursor:pointer;color:var(--t)}
+.cdoc-dia input{margin:0;accent-color:var(--p)}
+.cdoc-asis-resumen{margin:0}
+.cdoc-asis-falta{color:var(--av);font-weight:600}
 .cdoc-aviso-mejorada{border:1px solid var(--p);background:var(--ps);border-radius:10px;padding:10px 12px;font-size:13px}
 .cdoc-ajuste{font-variant-numeric:tabular-nums;color:var(--ts)}
 .cdoc-extra{color:var(--ok);font-weight:700}
@@ -1591,7 +1827,7 @@ html[data-cdoc-tema="dark"] input.cdoc-cambiado{background:#4a3b0a!important;col
 
   // Exponer funciones puras para pruebas (Node)
   if (EN_NODE) {
-    module.exports = { evaluarValor, calcularFinal, normalizarControl, claveNombre, analizarMatriz, autoMapear, cruzar, descargarPlantilla, descargarPlantillaMejorada, leerPlantillaMejorada, ajustarIndicadores };
+    module.exports = { evaluarValor, calcularFinal, normalizarControl, claveNombre, analizarMatriz, autoMapear, cruzar, descargarPlantilla, descargarPlantillaMejorada, leerPlantillaMejorada, ajustarIndicadores, parsearDetalle, generarSesiones, inicioSugerido };
     return;
   }
 

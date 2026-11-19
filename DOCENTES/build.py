@@ -11,7 +11,7 @@ import json
 import pathlib
 import zipfile
 
-VERSION = "1.3.1"
+VERSION = "1.4.0"
 RAIZ = pathlib.Path(__file__).resolve().parent
 SRC = RAIZ / "src"
 SHEETJS_VERSION = "0.18.5"
