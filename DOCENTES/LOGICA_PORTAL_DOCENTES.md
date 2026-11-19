@@ -95,16 +95,29 @@ Respuesta 200 HTML con "Las calificaciones parciales fueron guardadas correctame
 `cat_rpt_oficialcalif.asp?…&P=2&GpoID=10&Tipo=P` (formato de impresión) y
 `cat_posic_nav.asp?…&page_id=misgpos` (volver a grupos).
 
-## 7. Qué hace la extensión
+## 7. Otras páginas (usadas por el rediseño)
 
-En cualquier página de `conect_docentes` que tenga cajas con el patrón anterior:
+| Página | Contenido |
+|---|---|
+| `mnucatedraticos.asp` (`np=1/2/3`) | Menú de imágenes: semestre actual, generales, verano. Enlaces `cat_contenido.asp?…&page_id=` `misgpos`, `det_materias`, `horario`, `avisos`, `cambiapwd`, `doctos`, `misgposvera`, `mihorariovera`, `det_materiasvera`. Salir: `cerrar_sesion.asp` (target `_top`). |
+| `cat_contenido.asp` | Título + `<iframe>` con la página real (`conscalifpar` → `cat_rpt_conscalparcial.asp`, `rptfinales` → `cat_rpt_calfinales.asp`, `capturaparcial` → `cat_cap_parcial.asp`). |
+| `cat_horario.asp` | Horario como texto `<pre>`: materia, créditos y columnas fijas de 16 caracteres desde la 24 (Lu, Ma, Mi, Ju, Vi, Sa) con `HH:MM-HH:MM-SALÓN`. |
+| `cat_detmaterias.asp` | Una tabla por materia: indicadores y % por parcial, días/hora/salón y fechas de aplicación/captura (ordinario y regularización). |
+| `cat_rpt_conscalparcial.asp` | Calificaciones del parcial por indicador, calificación y estatus (`1OP`, `2NC`, `2OP`). |
+| `cat_rpt_calfinales.asp` | Parciales 1–3, calificación final y opción de acreditación. |
+| `cat_cambiapwd.asp` | `POST` a sí misma con `userid` (oculto), `old`, `new`, `conf` (10–15 letras/números). |
+| `excepcion.asp?excnum=…` | Errores (p. ej. contraseña incorrecta) con enlace "Intentar otra vez". |
 
-- Agrega el panel **Captura desde Excel**: plantilla descargable (.xlsx con la lista, los indicadores
-  y las calificaciones actuales), carga de .xlsx/.xls/.ods/.csv, detección automática de columnas
-  (número de control, nombre, cada indicador o una sola columna para todos), vista previa
-  antes/después y botones *Aplicar* / *Aplicar y guardar*.
-- Cruza por número de control (sin `*` ni espacios) y, como respaldo, por nombre.
-- Reemplaza el VBScript roto: recalcula la columna final, valida (0–100, NC, NP), redondea igual que
-  el portal, flechas ↑/↓ y Enter para moverse, evita envíos con valores inválidos, avisa si sales sin
-  guardar y reproduce el autoguardado de 18 min.
-- El envío es el mismo `submit` del formulario original: no se inventan campos ni peticiones.
+## 8. Qué hace la extensión
+
+- **Rediseño** (`conect-docentes-diseno.js`): pantallas de acceso, barra lateral con todas las secciones,
+  encabezado por sección, inicio con datos y accesos rápidos, *Mis grupos* en tarjetas (botón *Capturar*,
+  opciones agrupadas), horario visual, detalle de materias, reportes con resumen y colores, cambio de contraseña
+  con validación, resultado del guardado, tema claro/oscuro sincronizado y diseño para celular (el marco del menú
+  se oculta y se abre con un botón). Si un módulo falla, la página queda como el original.
+- **Captura desde Excel** (`conect-docentes.js`): panel en `cat_cap_parcial.asp` con plantilla básica y mejorada,
+  lectura por estructura de la mejorada (bloques por parcial, columnas insertadas, puntos menos/extra con tope 100)
+  y reparto del ajuste entre indicadores para que la final del portal coincida.
+- Reemplaza el VBScript roto de la captura: recalcula la final, valida (0–100, NC, NP), redondea igual que el
+  portal, flechas ↑/↓ y Enter para moverse, avisa si sales sin guardar y reproduce el autoguardado de 18 min.
+- El envío es siempre el `submit` del formulario original: no se inventan campos ni peticiones.

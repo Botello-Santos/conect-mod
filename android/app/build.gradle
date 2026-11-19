@@ -112,5 +112,6 @@ generarInyeccion('estudiantes') {
 
 generarInyeccion('docentes') {
     [new File(repoRaiz, 'DOCENTES/src/lib/xlsx.full.min.js').getText('UTF-8'),
+     new File(repoRaiz, 'DOCENTES/src/conect-docentes-diseno.js').getText('UTF-8'),
      new File(repoRaiz, 'DOCENTES/src/conect-docentes.js').getText('UTF-8')]
 }

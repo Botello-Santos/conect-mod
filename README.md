@@ -7,7 +7,7 @@ no se envían datos a ningún servidor externo.
 | Versión | Portal | Qué hace |
 |---|---|---|
 | [Estudiantes](ESTUDIANTES) | `purisima.tecnm.mx/conect/` | Rediseño moderno y responsivo, modo oscuro, horario visual y resumen académico. |
-| [Docentes](DOCENTES) | `purisima.tecnm.mx/conect_docentes/` | Pantallas de acceso rediseñadas (modo oscuro, adaptadas a celular), captura de calificaciones parciales **subiendo un Excel**, plantilla descargable y corrección del formulario de captura (que solo funcionaba en Internet Explorer). |
+| [Docentes](DOCENTES) | `purisima.tecnm.mx/conect_docentes/` | Rediseño completo (barra lateral, inicio, grupos en tarjetas, horario visual, reportes con resumen, modo oscuro, adaptado a celular) y captura de calificaciones **subiendo un Excel** con plantilla básica o mejorada. |
 
 ## Instalación
 
@@ -32,16 +32,21 @@ También funciona con Tampermonkey o Violentmonkey en cualquier navegador.
 
 ## Docentes: captura desde Excel
 
-1. En CONECT entra a *Mis grupos*, elige el grupo y *Evaluación #N*, y escribe la contraseña de captura.
-2. Arriba de la lista aparece el panel **Captura desde Excel**.
-3. *Descargar plantilla .xlsx* (lista del grupo, indicadores y calificaciones actuales) o usa tu propio Excel
-   con una columna de número de control.
-4. Sube el archivo, revisa la vista previa (antes → después) y presiona *Aplicar* o *Aplicar y guardar*.
+1. En CONECT entra a *Mis grupos* y presiona **Capturar** en el grupo; escribe la contraseña de captura.
+2. Arriba de la lista aparece el panel **Captura desde Excel** con dos plantillas, ambas con los alumnos del grupo ya llenados:
+   - **Básica**: una columna por indicador, con las calificaciones actuales del portal.
+   - **Mejorada** (basada en la lista real de un docente): los 3 parciales; cada trabajo por separado
+     (T1, T2… con promedio y ponderado por indicador); *Puntos menos*; hoja **Puntos extra** por criterio
+     de evaluación, que se suma solo a la calificación final (nunca pasa de 100); hojas de *Asistencia* y
+     *Segunda oportunidad*. Puedes insertar columnas para más trabajos dentro del bloque del indicador.
+3. Sube el archivo, revisa la vista previa (antes → después, y en la mejorada la final del Excel con sus
+   extras/menos) y presiona *Aplicar* o *Aplicar y guardar*.
 
 - Cruza alumnos por número de control y, como respaldo, por nombre.
-- Detecta columnas por indicador (`Proyecto`, `1 - PROYECTO…`, etc.) o una sola columna para todos.
 - Acepta 0–100, `NC` y `NP`; las celdas vacías no modifican nada.
 - Redondea igual que el portal (debajo de la mínima trunca, si no redondea).
+- El portal guarda una calificación por indicador: con la plantilla mejorada, los puntos extra/menos se reparten
+  entre los indicadores (ninguno pasa de 100) para que la final del portal coincida con la de tu Excel.
 
 La lógica del portal está documentada en [DOCENTES/LOGICA_PORTAL_DOCENTES.md](DOCENTES/LOGICA_PORTAL_DOCENTES.md).
 
@@ -52,7 +57,7 @@ cd DOCENTES
 python build.py
 ```
 
-Genera los paquetes de Chrome, Firefox y Safari a partir de `DOCENTES/src/`.
+Genera los paquetes de Chrome, Firefox y Safari a partir de `DOCENTES/src/` (`conect-docentes-diseno.js` = rediseño, `conect-docentes.js` = captura desde Excel).
 
 Las apps Android (`android/`, un WebView con dos sabores: `estudiantes` y `docentes`) se compilan en
 GitHub Actions ([android.yml](.github/workflows/android.yml)) al publicar un Release, y los APK firmados se

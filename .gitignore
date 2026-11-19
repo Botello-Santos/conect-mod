@@ -29,3 +29,9 @@ android/local.properties
 *.jks
 *.keystore
 android-firma/
+
+# Datos reales de docentes/alumnos y recursos capturados del portal
+DOCENTES/*.xlsx
+DOCENTES/*.xls
+DOCENTES/Connect Docentes recursos.zip
+DOCENTES/recursos/

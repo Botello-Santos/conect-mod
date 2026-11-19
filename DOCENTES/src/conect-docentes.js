@@ -513,7 +513,14 @@
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Calificaciones');
     XLSX.utils.book_append_sheet(wb, info, 'Info');
-    const nombre = 'Calificaciones_' + (modelo.claveGrupo || 'grupo').replace(/[^\w-]+/g, '') + '_P' + modelo.parcial + '.xlsx';
+    guardarLibro(wb, nombrePlantilla(modelo, 'basica_P' + modelo.parcial));
+  }
+
+  function nombrePlantilla(modelo, sufijo) {
+    return 'Calificaciones_' + (modelo.claveGrupo || 'grupo').replace(/[^\w-]+/g, '') + '_' + sufijo + '.xlsx';
+  }
+
+  function guardarLibro(wb, nombre) {
     // En la app de Android (WebView) las descargas blob: no funcionan: se manda el archivo a la app
     if (window.CMODAndroid && typeof window.CMODAndroid.postMessage === 'function') {
       const base64 = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
@@ -526,6 +533,339 @@
       return;
     }
     XLSX.writeFile(wb, nombre);
+  }
+
+  /* ------------------------------------------------------------------------
+     Plantilla mejorada (basada en la lista real de un docente)
+     Hoja "Calificaciones": Equipo | No. Control | Nombre | y por cada parcial:
+       PUNTOS MENOS | por indicador: actividades individuales, PROMEDIO (si hay
+       varias) y PONDERADO | FINAL
+     Encabezados en 3 filas (parcial / indicador / actividad); datos desde la 4.
+     Hoja "Puntos extra": por parcial, una columna por criterio de evaluación
+       (indicador) + OTRO + TOTAL EXTRA. Se suman solo a la FINAL (tope 100).
+     Hojas "Asistencia" y "Segunda oportunidad" como en la lista original.
+     ------------------------------------------------------------------------ */
+  const RE_INDICADOR_ACTIVIDADES = /PRACTIC|TAREA|TRABAJO|EJERCIC|ACTIVIDAD/;
+  const FILA_DATOS = 3; // índice 0 -> fila 4 de Excel
+  const HOJA_EXTRA = 'Puntos extra';
+
+  function nuevaHoja() {
+    const ws = {};
+    const merges = [];
+    const cols = [];
+    let maxR = 0;
+    let maxC = 0;
+    return {
+      cols,
+      put(r, c, v) {
+        if (v == null || v === '') return;
+        const a = XLSX.utils.encode_cell({ r, c });
+        if (typeof v === 'object' && v.f) ws[a] = { t: 'n', f: v.f };
+        else if (typeof v === 'number') ws[a] = { t: 'n', v };
+        else ws[a] = { t: 's', v: String(v) };
+        maxR = Math.max(maxR, r);
+        maxC = Math.max(maxC, c);
+      },
+      merge(r1, c1, r2, c2) {
+        if (r1 !== r2 || c1 !== c2) merges.push({ s: { r: r1, c: c1 }, e: { r: r2, c: c2 } });
+        maxR = Math.max(maxR, r2);
+        maxC = Math.max(maxC, c2);
+      },
+      ancho(c, wch) { cols[c] = { wch }; },
+      fin() {
+        ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: maxR, c: maxC } });
+        ws['!merges'] = merges;
+        for (let i = 0; i < cols.length; i++) if (!cols[i]) cols[i] = { wch: 10 };
+        ws['!cols'] = cols;
+        return ws;
+      }
+    };
+  }
+
+  const celda = (r, c, abs) => (abs ? '$' : '') + letraColumna(c) + (abs ? '$' : '') + (r + 1);
+
+  function columnasFijas(h, modelo) {
+    ['Equipo', 'No. Control', 'Nombre'].forEach((t, c) => { h.put(0, c, t); h.merge(0, c, 2, c); });
+    h.ancho(0, 8); h.ancho(1, 14); h.ancho(2, 36);
+    modelo.alumnos.forEach((al, i) => { h.put(FILA_DATOS + i, 1, al.control); h.put(FILA_DATOS + i, 2, al.nombre); });
+  }
+
+  function descargarPlantillaMejorada(modelo) {
+    const inds = modelo.indicadores;
+    const n = modelo.alumnos.length;
+    const ultima = FILA_DATOS + n - 1;
+    const tituloInd = ind => ind.num + ' · ' + ind.nombre + ' (' + ind.peso + '%)';
+
+    // --- Puntos extra (primero, para conocer la columna del total de cada parcial)
+    const hx = nuevaHoja();
+    columnasFijas(hx, modelo);
+    const totalExtra = {};
+    let c = 3;
+    for (let p = 1; p <= 3; p++) {
+      const ini = c;
+      const criterios = inds.map(tituloInd).concat(['OTRO']);
+      criterios.forEach(t => { hx.put(1, c, t); hx.put(2, c, 'pts'); hx.ancho(c, Math.max(10, Math.min(22, t.length))); c++; });
+      totalExtra[p] = c;
+      hx.put(1, c, 'TOTAL EXTRA'); hx.merge(1, c, 2, c); hx.ancho(c, 12);
+      for (let r = FILA_DATOS; r <= ultima; r++) {
+        const rango = celda(r, ini) + ':' + celda(r, c - 1);
+        hx.put(r, c, { f: 'IF(COUNT(' + rango + ')=0,"",SUM(' + rango + '))' });
+      }
+      c++;
+      hx.put(0, ini, 'PARCIAL ' + p); hx.merge(0, ini, 0, c - 1);
+    }
+
+    // --- Calificaciones
+    const h = nuevaHoja();
+    columnasFijas(h, modelo);
+    c = 3;
+    for (let p = 1; p <= 3; p++) {
+      const ini = c;
+      const menos = c;
+      h.put(1, c, 'PUNTOS MENOS'); h.merge(1, c, 2, c); h.ancho(c, 9); c++;
+      const ponderados = [];
+      inds.forEach(ind => {
+        const varias = RE_INDICADOR_ACTIVIDADES.test(normalizar(ind.nombre));
+        const nAct = varias ? 6 : 1;
+        const iniInd = c;
+        for (let k = 1; k <= nAct; k++) { h.put(2, c, varias ? 'T' + k : 'Calificación'); h.ancho(c, varias ? 6 : 12); c++; }
+        let prom = null;
+        if (varias) { prom = c; h.put(2, c, 'PROMEDIO'); h.ancho(c, 10); c++; }
+        const pond = c;
+        h.put(2, c, 'PONDERADO ' + ind.peso + '%'); h.ancho(c, 13); c++;
+        h.put(1, iniInd, tituloInd(ind)); h.merge(1, iniInd, 1, c - 1);
+        for (let r = FILA_DATOS; r <= ultima; r++) {
+          let fuente = celda(r, iniInd);
+          if (varias) {
+            const rango = celda(r, iniInd) + ':' + celda(r, prom - 1);
+            h.put(r, prom, { f: 'IF(COUNT(' + rango + ')=0,"",AVERAGE(' + rango + '))' });
+            fuente = celda(r, prom);
+          }
+          h.put(r, pond, { f: 'IF(' + fuente + '="","",' + fuente + '*' + ind.peso + '/100)' });
+        }
+        ponderados.push(pond);
+      });
+      const fin = c;
+      h.put(1, c, 'FINAL'); h.merge(1, c, 2, c); h.ancho(c, 9); c++;
+      const colTotal = letraColumna(totalExtra[p]);
+      for (let r = FILA_DATOS; r <= ultima; r++) {
+        const lista = ponderados.map(pc => celda(r, pc)).join(',');
+        const extra = "SUMIF('" + HOJA_EXTRA + "'!$B:$B,$B" + (r + 1) + ",'" + HOJA_EXTRA + "'!" + colTotal + ':' + colTotal + ')';
+        h.put(r, fin, { f: 'IF(COUNT(' + lista + ')=0,"",MIN(100,MAX(0,SUM(' + lista + ')-N(' + celda(r, menos) + ')+' + extra + ')))' });
+      }
+      h.put(0, ini, 'PARCIAL ' + p); h.merge(0, ini, 0, c - 1);
+    }
+
+    // --- Asistencia (1 = falta)
+    const ha = nuevaHoja();
+    ha.put(0, 0, 'ASISTENCIA (escribe la fecha arriba de cada sesión; 1 = falta)'); ha.merge(0, 0, 0, 2);
+    ['Equipo', 'No. Control', 'Nombre'].forEach((t, i) => ha.put(1, i, t));
+    ha.ancho(0, 8); ha.ancho(1, 14); ha.ancho(2, 36);
+    const SESIONES = 40;
+    for (let s = 0; s < SESIONES; s++) { ha.put(1, 3 + s, 'S' + (s + 1)); ha.ancho(3 + s, 6); }
+    const colFaltas = 3 + SESIONES;
+    ha.put(1, colFaltas, 'TOTAL FALTAS'); ha.ancho(colFaltas, 12);
+    modelo.alumnos.forEach((al, i) => {
+      const r = 2 + i;
+      ha.put(r, 1, al.control); ha.put(r, 2, al.nombre);
+      ha.put(r, colFaltas, { f: 'SUM(' + celda(r, 3) + ':' + celda(r, colFaltas - 1) + ')' });
+    });
+
+    // --- Segunda oportunidad
+    const hs = nuevaHoja();
+    ['No. Control', 'Nombre', 'Parcial 1', 'Parcial 2', 'Parcial 3'].forEach((t, i) => hs.put(0, i, t));
+    hs.ancho(0, 14); hs.ancho(1, 36); hs.ancho(2, 10); hs.ancho(3, 10); hs.ancho(4, 10);
+    modelo.alumnos.forEach((al, i) => { hs.put(1 + i, 0, al.control); hs.put(1 + i, 1, al.nombre); });
+
+    // --- Info
+    const info = XLSX.utils.aoa_to_sheet([
+      ['CONECT Mod Docentes - Plantilla mejorada'],
+      [],
+      ['Grupo', modelo.grupo],
+      ['Docente', modelo.docente],
+      ['Indicadores', inds.map(tituloInd).join('  |  ')],
+      ['Calificación mínima aprobatoria', modelo.calMin],
+      [],
+      ['Cómo usarla'],
+      ['1. En "Calificaciones" captura cada trabajo por separado (T1, T2, ...). El PROMEDIO ignora las celdas vacías.'],
+      ['2. ¿Más trabajos? Inserta columnas dentro del bloque del indicador (antes de PROMEDIO): la extensión las detecta sola.'],
+      ['3. PUNTOS MENOS se restan y "Puntos extra" se suma, ambos solo sobre la calificación FINAL. La final nunca pasa de 100 ni baja de 0.'],
+      ['4. No cambies la columna "No. Control": con ella se identifica a cada alumno.'],
+      ['5. En CONECT abre la captura del parcial y sube este archivo: se lee el bloque del parcial que estás capturando.'],
+      ['6. El portal guarda una calificación por indicador; para que su final coincida con la tuya, la extensión reparte'],
+      ['   los puntos extra/menos entre los indicadores (ninguno pasa de 100). Revisa la vista previa antes de guardar.']
+    ]);
+    info['!cols'] = [{ wch: 30 }, { wch: 90 }];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, h.fin(), 'Calificaciones');
+    XLSX.utils.book_append_sheet(wb, hx.fin(), HOJA_EXTRA);
+    XLSX.utils.book_append_sheet(wb, ha.fin(), 'Asistencia');
+    XLSX.utils.book_append_sheet(wb, hs.fin(), 'Segunda oportunidad');
+    XLSX.utils.book_append_sheet(wb, info, 'Info');
+    guardarLibro(wb, nombrePlantilla(modelo, 'mejorada'));
+  }
+
+  /* ---------------- Lectura de la plantilla mejorada ---------------- */
+  function numeroCelda(v) {
+    if (v === '' || v == null) return null;
+    if (typeof v === 'number') return v;
+    const s = String(v).trim().replace(',', '.');
+    return /^-?\d+(\.\d+)?$/.test(s) ? parseFloat(s) : null;
+  }
+
+  /** Columnas [ini, fin] del bloque "PARCIAL p" (fila 1 de Excel). */
+  function bloqueParcial(m, merges, p) {
+    const fila = m[0] || [];
+    const inicios = [];
+    fila.forEach((v, c) => {
+      const r = /^PARCIAL (\d)/.exec(normalizar(v));
+      if (r) inicios.push({ c, p: +r[1] });
+    });
+    const b = inicios.find(x => x.p === +p);
+    if (!b) return { hay: inicios.length > 0, ini: -1, fin: -1 };
+    const mg = merges.find(g => g.s.r === 0 && g.s.c === b.c);
+    const sig = inicios.find(x => x.c > b.c);
+    const ancho = Math.max(...m.slice(0, 4).map(f => (f || []).length));
+    return { hay: true, ini: b.c, fin: mg ? mg.e.c : (sig ? sig.c - 1 : ancho - 1) };
+  }
+
+  /** Texto del encabezado de grupo (fila 2 de Excel) que cubre la columna c. */
+  function grupoColumna(m, merges, c) {
+    const g = merges.find(x => x.s.r <= 1 && x.e.r >= 1 && x.s.c <= c && x.e.c >= c);
+    return normalizar(g ? (m[g.s.r] || [])[g.s.c] : (m[1] || [])[c]);
+  }
+
+  function columnaPorEncabezado(m, re, hasta) {
+    for (let r = 0; r < 3; r++) {
+      const fila = m[r] || [];
+      for (let c = 0; c < Math.min(fila.length, hasta); c++) if (re.test(normalizar(fila[c]))) return c;
+    }
+    return -1;
+  }
+
+  /**
+   * Reparte un ajuste entre los indicadores para que la calificación del
+   * portal sea "objetivo" (ya limitado a 0-100). Ningún indicador pasa de 100.
+   * Devuelve calificaciones enteras ya redondeadas como lo hace el portal.
+   */
+  function ajustarIndicadores(vals, pesos, objetivo, calMin) {
+    const lim = v => Math.min(100, Math.max(0, v));
+    const f = d => vals.reduce((a, v, i) => a + (pesos[i] / 100) * lim(v + d), 0);
+    let lo = -100;
+    let hi = 100;
+    for (let k = 0; k < 60; k++) {
+      const mid = (lo + hi) / 2;
+      if (f(mid) < objetivo) lo = mid; else hi = mid;
+    }
+    const res = vals.map(v => evaluarValor(Math.round(lim(v + hi) * 1e6) / 1e6, calMin).num);
+    const o = Math.round(objetivo * 1e6) / 1e6;
+    const esperado = o < calMin ? Math.trunc(o) : Math.round(o);
+    const inds = pesos.map(peso => ({ peso }));
+    const orden = pesos.map((_, i) => i).sort((a, b) => pesos[b] - pesos[a]);
+    for (let k = 0; k < 400; k++) {
+      const fin = calcularFinal(res, inds, calMin);
+      if (fin === esperado) break;
+      const i = fin < esperado ? orden.find(j => res[j] < 100) : orden.find(j => res[j] > 0);
+      if (i == null) break;
+      res[i] += fin < esperado ? 1 : -1;
+    }
+    return res;
+  }
+
+  /**
+   * Si el libro es una plantilla mejorada, devuelve un "análisis" ya resuelto
+   * para el parcial que se está capturando: [No. Control, Nombre, ind1..indN].
+   */
+  function leerPlantillaMejorada(libro, modelo) {
+    const ws = libro.Sheets.Calificaciones;
+    if (!ws) return null;
+    const m = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+    const merges = ws['!merges'] || [];
+    const b = bloqueParcial(m, merges, modelo.parcial);
+    if (!b.hay) return null;
+    if (b.ini < 0) throw new Error('La plantilla no tiene un bloque "PARCIAL ' + modelo.parcial + '".');
+
+    const colCtrl = columnaPorEncabezado(m, /CONTROL/, b.ini);
+    const colNom = columnaPorEncabezado(m, /NOMBRE/, b.ini);
+    if (colCtrl < 0) throw new Error('No se encontró la columna "No. Control" en la hoja Calificaciones.');
+
+    const inds = modelo.indicadores;
+    const actividades = inds.map(() => []);
+    let colMenos = -1;
+    for (let c = b.ini; c <= b.fin; c++) {
+      const g = grupoColumna(m, merges, c);
+      const etq = normalizar((m[2] || [])[c]);
+      if (!g) continue;
+      if (/^PUNTOS MENOS/.test(g)) { colMenos = c; continue; }
+      if (/^FINAL/.test(g) || /^PROMEDIO|^PONDERADO/.test(etq)) continue;
+      const num = /^(\d+)/.exec(g);
+      let i = num ? inds.findIndex(ind => ind.num === num[1]) : -1;
+      if (i < 0) i = inds.findIndex(ind => g.includes(normalizar(ind.nombre).slice(0, 10)));
+      if (i >= 0) actividades[i].push(c);
+    }
+    const faltan = inds.filter((_, i) => !actividades[i].length).map(ind => ind.num + '-' + ind.nombre);
+
+    // Puntos extra del mismo parcial, por número de control
+    const extras = new Map();
+    const nombreExtra = libro.SheetNames.find(n => /EXTRA/.test(normalizar(n)));
+    if (nombreExtra) {
+      const wx = libro.Sheets[nombreExtra];
+      const mx = XLSX.utils.sheet_to_json(wx, { header: 1, raw: true, defval: '' });
+      const gx = wx['!merges'] || [];
+      const bx = bloqueParcial(mx, gx, modelo.parcial);
+      const cx = columnaPorEncabezado(mx, /CONTROL/, bx.ini < 0 ? 3 : bx.ini);
+      if (bx.ini >= 0 && cx >= 0) {
+        const cols = [];
+        for (let c = bx.ini; c <= bx.fin; c++) if (!/^TOTAL/.test(grupoColumna(mx, gx, c))) cols.push(c);
+        mx.slice(FILA_DATOS).forEach(f => {
+          const ctrl = normalizarControl(f[cx]);
+          if (!ctrl) return;
+          const s = cols.reduce((a, c) => a + (numeroCelda(f[c]) || 0), 0);
+          if (s) extras.set(ctrl, (extras.get(ctrl) || 0) + s);
+        });
+      }
+    }
+
+    const porControl = new Map(modelo.alumnos.map(al => [al.control, al]));
+    const pesos = inds.map(ind => ind.peso);
+    const notas = new Map();
+    const datos = [];
+    let fuera = 0;
+    m.slice(FILA_DATOS).forEach(f => {
+      const ctrl = normalizarControl(f[colCtrl]);
+      const nombre = colNom >= 0 ? String(f[colNom] || '').trim() : '';
+      if (!ctrl) { datos.push([]); return; }
+      const vals = inds.map((ind, i) => {
+        const nums = actividades[i].map(c => numeroCelda(f[c])).filter(v => v != null);
+        const validos = nums.filter(v => v >= 0 && v <= 100);
+        fuera += nums.length - validos.length;
+        return validos.length ? validos.reduce((a, v) => a + v, 0) / validos.length : null;
+      });
+      const menos = colMenos >= 0 ? Math.max(0, numeroCelda(f[colMenos]) || 0) : 0;
+      const extra = extras.get(ctrl) || 0;
+      if (vals.every(v => v == null)) { datos.push([ctrl, nombre]); return; }
+      // Indicadores sin trabajos capturados: se toma lo que ya tiene el portal
+      const al = porControl.get(ctrl);
+      const base = vals.map((v, i) => (v != null ? v : (al && al.cajas[i] ? evaluarValor(al.cajas[i].value, modelo.calMin).num : 0)));
+      const finalExcel = base.reduce((a, v, i) => a + (pesos[i] / 100) * v, 0);
+      const objetivo = Math.min(100, Math.max(0, finalExcel - menos + extra));
+      const res = ajustarIndicadores(base, pesos, objetivo, modelo.calMin);
+      notas.set(ctrl, { finalExcel, menos, extra, objetivo, tope: finalExcel - menos + extra > 100 });
+      datos.push([ctrl, nombre].concat(res.map(String)));
+    });
+
+    const columnas = [{ idx: 0, encabezado: 'No. Control', etiqueta: 'No. Control' }, { idx: 1, encabezado: 'Nombre', etiqueta: 'Nombre' }]
+      .concat(inds.map((ind, i) => ({ idx: 2 + i, encabezado: ind.nombre, etiqueta: ind.num + ' · ' + ind.nombre })));
+    const avisos = [];
+    if (faltan.length) avisos.push('Sin columnas de trabajos para: ' + faltan.join(', ') + ' (se conserva lo que tiene el portal).');
+    if (fuera) avisos.push(fuera + ' valor(es) fuera de 0-100 se ignoraron.');
+    if (extras.size) avisos.push(extras.size + ' alumno(s) con puntos extra.');
+    return {
+      analisis: { filaEnc: 2, inicioDatos: FILA_DATOS, datos, columnas, notas, mejorada: true },
+      mapa: { control: 0, nombre: 1, indicadores: inds.map((_, i) => 2 + i) },
+      avisos
+    };
   }
 
   /* ------------------------------------------------------------------------
@@ -568,11 +908,24 @@
       ]),
       el('ol', { class: 'cdoc-pasos' }, [
         el('li', {}, [
-          el('div', { class: 'cdoc-paso-tit', text: 'Descarga la plantilla (opcional)' }),
-          el('div', { class: 'cdoc-nota', text: 'Trae la lista del grupo, los indicadores y las calificaciones actuales. También puedes usar tu propio Excel con una columna de número de control.' }),
-          el('button', { type: 'button', class: 'cdoc-btn cdoc-btn-sec', onclick: () => {
-            try { descargarPlantilla(modelo); } catch (err) { avisar('No se pudo generar la plantilla: ' + err.message, 'error'); }
-          } }, 'Descargar plantilla .xlsx')
+          el('div', { class: 'cdoc-paso-tit', text: 'Descarga una plantilla (opcional)' }),
+          el('div', { class: 'cdoc-nota', text: 'Ambas vienen con la lista del grupo ya llenada. También puedes usar tu propio Excel con una columna de número de control.' }),
+          el('div', { class: 'cdoc-plantillas' }, [
+            el('div', { class: 'cdoc-plantilla' }, [
+              el('b', { text: 'Básica' }),
+              el('span', { text: 'Una columna por indicador, con las calificaciones actuales del portal.' }),
+              el('button', { type: 'button', class: 'cdoc-btn cdoc-btn-sec', onclick: () => {
+                try { descargarPlantilla(modelo); } catch (err) { avisar('No se pudo generar la plantilla: ' + err.message, 'error'); }
+              } }, 'Descargar básica')
+            ]),
+            el('div', { class: 'cdoc-plantilla cdoc-plantilla-destacada' }, [
+              el('b', { text: 'Mejorada' }),
+              el('span', { text: 'Los 3 parciales, cada trabajo por separado, puntos menos, hoja de puntos extra (tope 100), asistencia y segunda oportunidad.' }),
+              el('button', { type: 'button', class: 'cdoc-btn', onclick: () => {
+                try { descargarPlantillaMejorada(modelo); } catch (err) { avisar('No se pudo generar la plantilla: ' + err.message, 'error'); }
+              } }, 'Descargar mejorada')
+            ])
+          ])
         ]),
         el('li', {}, [
           el('div', { class: 'cdoc-paso-tit', text: 'Sube el archivo' }),
@@ -627,6 +980,22 @@
         try {
           libro = leerLibro(new Uint8Array(lector.result));
           ui.nombreArchivo.textContent = 'Archivo: ' + archivo.name;
+          // ¿Plantilla mejorada? Se lee por su estructura (bloques por parcial)
+          const mej = leerPlantillaMejorada(libro, modelo);
+          if (mej) {
+            analisis = mej.analisis;
+            mapa = mej.mapa;
+            ui.mapeo.textContent = '';
+            ui.mapeo.classList.remove('cdoc-oculto');
+            ui.mapeo.appendChild(el('div', { class: 'cdoc-aviso-mejorada' }, [
+              el('b', { text: 'Plantilla mejorada · Parcial ' + modelo.parcial }),
+              el('span', { text: ' Se promediaron los trabajos de cada indicador y se aplicaron puntos menos y extra sobre la final (máximo 100).' }),
+              mej.avisos.length ? el('div', { class: 'cdoc-nota', text: mej.avisos.join(' ') }) : null
+            ]));
+            actualizarVista();
+            avisar('');
+            return;
+          }
           // Elegir la hoja "Calificaciones" si existe, si no la primera con datos
           const hoja = libro.SheetNames.find(n => /calif/i.test(n)) || libro.SheetNames[0];
           seleccionarHoja(hoja);
@@ -729,8 +1098,10 @@
       const thead = el('tr', {}, [
         el('th', { text: '#' }), el('th', { text: 'No. Control' }), el('th', { text: 'Nombre' }),
         ...modelo.indicadores.map(ind => el('th', { title: ind.nombre, text: ind.num + ' (' + ind.peso + '%)' })),
-        el('th', { text: 'Calif.' })
+        el('th', { text: 'Calif.' }),
+        analisis.notas ? el('th', { title: 'Final calculada en tu Excel y ajustes aplicados', text: 'Excel' }) : null
       ]);
+      const fmt = v => String(Math.round(v * 100) / 100);
       const cuerpo = r.map(x => {
         const tr = el('tr', { class: 'cdoc-fila-' + x.estado });
         tr.append(
@@ -754,6 +1125,17 @@
             String(x.finalNuevo) !== finalAnt ? [el('s', { text: finalAnt || '\u2013' }), ' ', el('b', { text: String(x.finalNuevo) })] : String(x.finalNuevo)));
         } else {
           tr.appendChild(el('td', { class: 'cdoc-sin', text: finalAnt }));
+        }
+        if (analisis.notas) {
+          const nt = x.reg ? analisis.notas.get(x.reg.control) : null;
+          tr.appendChild(nt
+            ? el('td', { class: 'cdoc-ajuste', title: 'Final del Excel ' + fmt(nt.finalExcel) + (nt.menos ? ', menos ' + fmt(nt.menos) : '') + (nt.extra ? ', extra ' + fmt(nt.extra) : '') + (nt.tope ? ' (limitada a 100)' : '') }, [
+              fmt(nt.finalExcel),
+              nt.menos ? el('span', { class: 'cdoc-menos', text: ' \u2212' + fmt(nt.menos) }) : null,
+              nt.extra ? el('span', { class: 'cdoc-extra', text: ' +' + fmt(nt.extra) }) : null,
+              nt.tope ? el('span', { class: 'cdoc-tope', text: ' \u2192 100' }) : null
+            ])
+            : el('td', { class: 'cdoc-sin', text: '·' }));
         }
         return tr;
       });
@@ -826,8 +1208,8 @@
      Estilos
      ------------------------------------------------------------------------ */
   const CSS = `
-.cdoc-panel{--p:#1b396a;--p2:#132a4f;--ps:#e8eef8;--ac:#8a2036;--b:#dfe5ee;--t:#1a2433;--ts:#4b5768;--ok:#17784a;--okf:#e4f4ec;--er:#b42318;--erf:#fdeceb;--av:#8f5200;--avf:#fff2dc;
-  font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:var(--t);background:#fff;border:1px solid var(--b);border-radius:12px;
+.cdoc-panel{--p:var(--cm-primario,#1b396a);--p2:var(--cm-primario-hover,#132a4f);--ps:var(--cm-primario-suave,#e8eef8);--ac:var(--cm-acento,#8a2036);--b:var(--cm-borde,#dfe5ee);--t:var(--cm-texto,#1a2433);--ts:var(--cm-texto-suave,#4b5768);--ok:var(--cm-exito,#17784a);--okf:var(--cm-exito-fondo,#e4f4ec);--er:var(--cm-peligro,#b42318);--erf:var(--cm-peligro-fondo,#fdeceb);--av:var(--cm-aviso,#8f5200);--avf:var(--cm-aviso-fondo,#fff2dc);--sup:var(--cm-superficie,#fff);--sup2:var(--cm-superficie-2,#f8fafc);--enc:var(--cm-encabezado-tabla,#eef2f7);
+  font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:var(--t);background:var(--sup);border:1px solid var(--b);border-radius:12px;
   box-shadow:0 1px 3px rgba(16,24,40,.08);max-width:860px;margin:4px auto 18px;padding:16px 18px;text-align:left;box-sizing:border-box}
 .cdoc-panel *{box-sizing:border-box}
 .cdoc-cab{display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;align-items:flex-start;border-bottom:1px solid var(--b);padding-bottom:12px;margin-bottom:6px}
@@ -835,7 +1217,7 @@
 .cdoc-sub{color:var(--ts);font-size:13px}
 .cdoc-chips,.cdoc-resumen{display:flex;flex-wrap:wrap;gap:6px}
 .cdoc-resumen{margin:8px 0}
-.cdoc-chip{display:inline-block;padding:2px 10px;border-radius:999px;background:#edf0f4;color:#36424f;font-size:12px;font-weight:600;white-space:nowrap}
+.cdoc-chip{display:inline-block;padding:2px 10px;border-radius:999px;background:var(--cm-neutro-fondo,#edf0f4);color:var(--cm-neutro,#36424f);font-size:12px;font-weight:600;white-space:nowrap}
 .cdoc-chip-ok{background:var(--okf);color:var(--ok)}
 .cdoc-chip-error{background:var(--erf);color:var(--er)}
 .cdoc-chip-aviso{background:var(--avf);color:var(--av)}
@@ -848,13 +1230,23 @@
 .cdoc-paso-tit{font-weight:700;margin-bottom:2px}
 .cdoc-nota{color:var(--ts);font-size:12.5px;margin:2px 0 8px}
 .cdoc-oculto{display:none!important}
-.cdoc-zona{display:flex;flex-direction:column;align-items:center;gap:2px;padding:18px;border:2px dashed #b7c3d6;border-radius:10px;background:#f8fafc;cursor:pointer;text-align:center;color:var(--t)}
+.cdoc-zona{display:flex;flex-direction:column;align-items:center;gap:2px;padding:18px;border:2px dashed var(--b);border-radius:10px;background:var(--sup2);cursor:pointer;text-align:center;color:var(--t)}
 .cdoc-zona span{color:var(--ts);font-size:12.5px}
 .cdoc-zona:hover,.cdoc-sobre{border-color:var(--p);background:var(--ps)}
 .cdoc-btn{font:inherit;font-weight:600;border:1px solid var(--p);background:var(--p);color:#fff;border-radius:8px;padding:7px 14px;cursor:pointer;margin:2px 6px 2px 0}
 .cdoc-btn:hover{background:var(--p2)}
 .cdoc-btn:disabled{opacity:.45;cursor:not-allowed}
-.cdoc-btn-sec{background:#fff;color:var(--p)}
+.cdoc-btn-sec{background:transparent;color:var(--p)}
+.cdoc-plantillas{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:4px}
+.cdoc-plantilla{display:flex;flex-direction:column;gap:4px;border:1px solid var(--b);border-radius:10px;padding:12px}
+.cdoc-plantilla span{color:var(--ts);font-size:12.5px;flex:1}
+.cdoc-plantilla .cdoc-btn{align-self:flex-start;margin-top:6px}
+.cdoc-plantilla-destacada{border-color:var(--p);background:var(--ps)}
+.cdoc-aviso-mejorada{border:1px solid var(--p);background:var(--ps);border-radius:10px;padding:10px 12px;font-size:13px}
+.cdoc-ajuste{font-variant-numeric:tabular-nums;color:var(--ts)}
+.cdoc-extra{color:var(--ok);font-weight:700}
+.cdoc-menos{color:var(--er);font-weight:700}
+.cdoc-tope{color:var(--av);font-weight:700}
 .cdoc-btn-sec:hover{background:var(--ps)}
 .cdoc-btn-guardar{background:var(--ac);border-color:var(--ac)}
 .cdoc-btn-guardar:hover{background:#6e1a2b}
@@ -863,11 +1255,11 @@
 @media (max-width:560px){.cdoc-grid{grid-template-columns:1fr}}
 .cdoc-etq{font-size:13px;font-weight:600}
 .cdoc-etq-suave{font-weight:400;color:var(--ts)}
-.cdoc-select{font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--b);border-radius:7px;background:#fff;color:var(--t);width:100%}
+.cdoc-select{font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--b);border-radius:7px;background:var(--sup);color:var(--t);width:100%}
 .cdoc-vista{max-height:380px;overflow:auto;border:1px solid var(--b);border-radius:8px;margin:6px 0}
 .cdoc-tabla{border-collapse:collapse;width:100%;font-size:12.5px}
-.cdoc-tabla th{position:sticky;top:0;background:#eef2f7;color:var(--t);text-align:left;padding:6px 8px;border-bottom:1px solid var(--b);white-space:nowrap}
-.cdoc-tabla td{padding:4px 8px;border-bottom:1px solid #eef1f5;white-space:nowrap}
+.cdoc-tabla th{position:sticky;top:0;background:var(--enc);color:var(--t);text-align:left;padding:6px 8px;border-bottom:1px solid var(--b);white-space:nowrap}
+.cdoc-tabla td{padding:4px 8px;border-bottom:1px solid var(--b);white-space:nowrap}
 .cdoc-tabla td:nth-child(3){white-space:normal;min-width:160px}
 .cdoc-tabla s{color:#98a2b3}
 .cdoc-mono{font-family:ui-monospace,Consolas,monospace}
@@ -875,7 +1267,7 @@
 .cdoc-rep b,.cdoc-rep{color:var(--er)}
 .cdoc-err{background:var(--erf);color:var(--er);font-weight:700}
 .cdoc-sin{color:#98a2b3}
-.cdoc-fila-sin-datos td{background:#fffaf0}
+.cdoc-fila-sin-datos td{background:var(--avf)}
 .cdoc-fila-error td:first-child{box-shadow:inset 3px 0 var(--er)}
 .cdoc-fila-cambia td:first-child{box-shadow:inset 3px 0 var(--ok)}
 .cdoc-sobrantes{color:var(--av);padding:6px 8px}
@@ -889,6 +1281,8 @@ input.cdoc-caja:focus{outline:2px solid #1d4f9e;border-color:#1d4f9e}
 input.cdoc-cambiado{background:#fff4c2!important}
 input.cdoc-invalido{background:#fdeceb!important;border-color:#b42318!important;color:#b42318}
 input.cdoc-reprobado{color:#b42318!important;font-weight:700}
+html[data-cdoc-tema="dark"] .cdoc-btn-sec{color:var(--cm-enlace,#9cbcf0);border-color:var(--b)}
+html[data-cdoc-tema="dark"] input.cdoc-cambiado{background:#4a3b0a!important;color:#fff}
 `;
 
   function inyectarEstilos() {
@@ -899,331 +1293,9 @@ input.cdoc-reprobado{color:#b42318!important;font-weight:700}
   }
 
   /* ------------------------------------------------------------------------
-     Pantallas de acceso
-     - Usuario:     xyz_p1_Logi_Us13_Acce.html   (input username, botón login)
-     - Contraseña:  27_p3_Pass_xyz_Logi_Acce.asp (input password, botón valida_pass)
-     - Captura:     xyzLogPassCaptCalif123.asp   (input passwordCC, botón valida_passCC)
-     Se reutilizan el formulario y los campos originales (mismos nombres y
-     valores), solo se reacomodan. El mod no lee lo que se escribe.
-     ------------------------------------------------------------------------ */
-  const PASOS_ACCESO = {
-    username: {
-      paso: 1, titulo: 'Inicia sesión', texto: 'Escribe tu usuario (clave de docente).',
-      etiqueta: 'Usuario', auto: 'username'
-    },
-    password: {
-      paso: 2, titulo: 'Contraseña', texto: 'Escribe tu contraseña del portal.',
-      etiqueta: 'Contraseña', auto: 'current-password', volver: 'xyz_p1_Logi_Us13_Acce.html'
-    },
-    passwordCC: {
-      titulo: 'Contraseña de captura', texto: 'Para capturar calificaciones escribe tu contraseña de captura.',
-      etiqueta: 'Contraseña de captura', auto: 'off'
-    }
-  };
-
-  function detectarAcceso() {
-    for (const nombre of Object.keys(PASOS_ACCESO)) {
-      const campo = $('input[name="' + nombre + '"]');
-      if (campo && campo.form) return { nombre, campo, form: campo.form, cfg: PASOS_ACCESO[nombre] };
-    }
-    return null;
-  }
-
-  function nombreDocente() {
-    try {
-      const p = new URLSearchParams(location.search);
-      const n = (p.get('catnombreUser_Nombre') || p.get('cat_nombre') || '').trim();
-      if (!n || n.includes('\ufffd')) return '';
-      return n.toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase());
-    } catch (e) {
-      return '';
-    }
-  }
-
-  /**
-   * La página principal es un frameset: cols="165px,*". Mientras el marco
-   * izquierdo muestra un paso de acceso se ensancha (o pasa a pantalla
-   * completa en pantallas angostas); al llegar al menú se restaura.
-   */
-  function ajustarMarcos(esAcceso) {
-    try {
-      if (window.name !== 'fraizq' || window.parent !== window.top) return;
-      const fs = window.top.document.querySelector('frameset');
-      if (!fs) return;
-      if (!fs.hasAttribute('data-cdoc-cols')) fs.setAttribute('data-cdoc-cols', fs.getAttribute('cols') || '165px,*');
-      const original = fs.getAttribute('data-cdoc-cols');
-      // El portal no declara viewport: en celular se ve a ancho de escritorio.
-      // Solo durante el acceso se usa el ancho del dispositivo.
-      const topDoc = window.top.document;
-      let meta = topDoc.getElementById('cdoc-viewport');
-      if (esAcceso && !meta && !topDoc.querySelector('meta[name="viewport"]')) {
-        meta = topDoc.createElement('meta');
-        meta.id = 'cdoc-viewport';
-        meta.name = 'viewport';
-        meta.content = 'width=device-width, initial-scale=1';
-        (topDoc.head || topDoc.documentElement).appendChild(meta);
-      } else if (!esAcceso && meta) {
-        meta.remove();
-      }
-      const aplicar = () => {
-        if (!esAcceso) { fs.setAttribute('cols', original); return; }
-        const ancho = Math.min(window.top.innerWidth, window.top.screen.width || Infinity);
-        fs.setAttribute('cols', ancho < 760 ? '*,0' : '420,*');
-      };
-      aplicar();
-      if (esAcceso) window.top.addEventListener('resize', aplicar);
-    } catch (e) {
-      /* marco de otro origen: nada que hacer */
-    }
-  }
-
-  const SVG_NS = 'http://www.w3.org/2000/svg';
-  function icono(trazos, tam) {
-    const svg = document.createElementNS(SVG_NS, 'svg');
-    svg.setAttribute('viewBox', '0 0 24 24');
-    svg.setAttribute('width', tam || 20);
-    svg.setAttribute('height', tam || 20);
-    svg.setAttribute('fill', 'none');
-    svg.setAttribute('stroke', 'currentColor');
-    svg.setAttribute('stroke-width', '2');
-    svg.setAttribute('stroke-linecap', 'round');
-    svg.setAttribute('stroke-linejoin', 'round');
-    svg.setAttribute('aria-hidden', 'true');
-    trazos.forEach(d => {
-      const p = document.createElementNS(SVG_NS, 'path');
-      p.setAttribute('d', d);
-      svg.appendChild(p);
-    });
-    return svg;
-  }
-  const ICONO_BIRRETE = ['M22 10 12 5 2 10l10 5 10-5Z', 'M6 12v5c3 2 9 2 12 0v-5', 'M22 10v6'];
-  const ICONO_OJO = ['M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z', 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z'];
-  const ICONO_SOL = ['M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z', 'M12 2v2', 'M12 20v2', 'm4.93 4.93 1.41 1.41', 'm17.66 17.66 1.41 1.41', 'M2 12h2', 'M20 12h2', 'm6.34 17.66-1.41 1.41', 'm19.07 4.93-1.41 1.41'];
-  const ICONO_LUNA = ['M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z'];
-
-  /* ------------------------------------------------------------------------
-     Tema claro / oscuro: misma lógica y misma preferencia que la versión de
-     estudiantes (localStorage "cmod.tema": 'auto' | 'light' | 'dark'). Ambos
-     portales están en el mismo dominio, así que comparten la elección.
-     ------------------------------------------------------------------------ */
-  const PREF_TEMA = 'cmod.tema';
-  function leerPref(clave, porDefecto) {
-    try { const v = window.localStorage.getItem(clave); return v === null ? porDefecto : v; } catch (e) { return porDefecto; }
-  }
-  function guardarPref(clave, valor) {
-    try { window.localStorage.setItem(clave, String(valor)); } catch (e) { /* almacenamiento no disponible */ }
-  }
-  function temaEfectivo() {
-    const t = leerPref(PREF_TEMA, 'auto');
-    if (t === 'light' || t === 'dark') return t;
-    try { return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; } catch (e) { return 'light'; }
-  }
-  function aplicarTema() {
-    const t = temaEfectivo();
-    document.documentElement.setAttribute('data-cdoc-tema', t);
-    document.dispatchEvent(new CustomEvent('cdoc:tema'));
-    // App de Android: color de la barra de estado
-    try {
-      if (window.CMODAndroid && typeof window.CMODAndroid.postMessage === 'function') {
-        window.CMODAndroid.postMessage(JSON.stringify({ tipo: 'tema', valor: t }));
-      }
-    } catch (e) { /* nada */ }
-  }
-  function suavizarCambioTema() {
-    const raiz = document.documentElement;
-    raiz.classList.add('cdoc-cambiando-tema');
-    clearTimeout(suavizarCambioTema.t);
-    suavizarCambioTema.t = setTimeout(() => raiz.classList.remove('cdoc-cambiando-tema'), 400);
-  }
-  function alternarTema() {
-    suavizarCambioTema();
-    guardarPref(PREF_TEMA, temaEfectivo() === 'dark' ? 'light' : 'dark');
-    aplicarTema(); // los demás marcos se enteran por el evento "storage"
-  }
-  function instalarTema() {
-    aplicarTema();
-    window.addEventListener('storage', e => {
-      if (e.key === PREF_TEMA) { suavizarCambioTema(); aplicarTema(); }
-    });
-    try {
-      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-        if (leerPref(PREF_TEMA, 'auto') === 'auto') aplicarTema();
-      });
-    } catch (e) { /* navegador antiguo */ }
-    // Alt + T, igual que en la versión de estudiantes
-    document.addEventListener('keydown', e => {
-      if (e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyT') { e.preventDefault(); alternarTema(); }
-    });
-  }
-  function botonTema() {
-    const b = el('button', { type: 'button', class: 'cdoc-acc-tema' });
-    const pintar = () => {
-      const oscuro = temaEfectivo() === 'dark';
-      b.replaceChildren(icono(oscuro ? ICONO_SOL : ICONO_LUNA, 18));
-      const txt = oscuro ? 'Activar modo claro (Alt + T)' : 'Activar modo oscuro (Alt + T)';
-      b.setAttribute('aria-label', txt);
-      b.title = txt;
-    };
-    b.addEventListener('click', () => { alternarTema(); pintar(); });
-    document.addEventListener('cdoc:tema', pintar);
-    pintar();
-    return b;
-  }
-
-  const ICONO_OJO_NO = ['M3 3l18 18', 'M10.6 5.1A10 10 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4.2', 'M6.6 6.6C3.8 8.4 2 12 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.4-1.6', 'M9.9 9.9a3 3 0 0 0 4.2 4.2'];
-
-  function moduloAcceso(acc) {
-    const { form, campo, cfg } = acc;
-    const enviar = Array.from(form.elements).find(e => e.type === 'submit');
-    document.documentElement.classList.add('cdoc-acceso');
-    instalarTema();
-    inyectarEstilosAcceso();
-    if (!$('meta[name="viewport"]')) {
-      const meta = el('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1' });
-      (document.head || document.documentElement).appendChild(meta);
-    }
-
-    // Textos sueltos ("Usuario:", "Contraseña:") y saltos de línea del formulario original
-    Array.from(form.querySelectorAll('br')).forEach(b => b.remove());
-    const sueltos = document.createTreeWalker(form, NodeFilter.SHOW_TEXT);
-    const vaciar = [];
-    while (sueltos.nextNode()) if (sueltos.currentNode.textContent.trim()) vaciar.push(sueltos.currentNode);
-    vaciar.forEach(n => { n.textContent = ''; });
-
-    // Campo con etiqueta
-    if (!campo.id) campo.id = 'cdoc-' + acc.nombre;
-    campo.removeAttribute('style');
-    campo.setAttribute('autocomplete', cfg.auto);
-    campo.setAttribute('autocapitalize', 'off');
-    campo.setAttribute('spellcheck', 'false');
-    const caja = el('div', { class: 'cdoc-acc-campo' });
-    campo.parentNode.insertBefore(el('label', { class: 'cdoc-acc-etq', for: campo.id, text: cfg.etiqueta }), campo);
-    campo.parentNode.insertBefore(caja, campo);
-    caja.appendChild(campo);
-
-    if (campo.type === 'password') {
-      caja.classList.add('cdoc-con-ojo');
-      const ojo = el('button', { type: 'button', class: 'cdoc-acc-ojo', 'aria-label': 'Mostrar contraseña', 'aria-pressed': 'false', title: 'Mostrar contraseña' });
-      ojo.appendChild(icono(ICONO_OJO));
-      ojo.addEventListener('click', () => {
-        const mostrar = campo.type === 'password';
-        campo.type = mostrar ? 'text' : 'password';
-        ojo.replaceChildren(icono(mostrar ? ICONO_OJO_NO : ICONO_OJO));
-        ojo.setAttribute('aria-label', mostrar ? 'Ocultar contraseña' : 'Mostrar contraseña');
-        ojo.setAttribute('aria-pressed', String(mostrar));
-        campo.focus();
-      });
-      caja.appendChild(ojo);
-
-      const mayus = el('div', { class: 'cdoc-acc-mayus', role: 'status', hidden: true, text: 'Bloq Mayús está activado.' });
-      caja.insertAdjacentElement('afterend', mayus);
-      const revisar = e => { if (typeof e.getModifierState === 'function') mayus.hidden = !e.getModifierState('CapsLock'); };
-      campo.addEventListener('keydown', revisar);
-      campo.addEventListener('keyup', revisar);
-      campo.addEventListener('blur', () => { mayus.hidden = true; });
-    }
-
-    if (enviar) {
-      enviar.removeAttribute('style');
-      enviar.classList.add('cdoc-acc-btn');
-    }
-
-    // Evitar doble envío sin deshabilitar el botón (su name/value se envía al servidor)
-    let enviado = false;
-    form.addEventListener('submit', e => {
-      if (enviado) { e.preventDefault(); return; }
-      enviado = true;
-      if (enviar) enviar.classList.add('cdoc-enviando');
-      setTimeout(() => { enviado = false; if (enviar) enviar.classList.remove('cdoc-enviando'); }, 15000);
-    });
-
-    // Tarjeta
-    const nombre = cfg.paso === 2 || acc.nombre === 'passwordCC' ? nombreDocente() : '';
-    const logo = el('div', { class: 'cdoc-acc-logo' });
-    logo.appendChild(icono(ICONO_BIRRETE, 22));
-    const pie = el('p', { class: 'cdoc-acc-pie', text: 'CONECT Mod (no oficial). Tus datos se envían únicamente al portal del instituto.' });
-    const tarjeta = el('main', { class: 'cdoc-acc-tarjeta' }, [
-      el('div', { class: 'cdoc-acc-marca' }, [
-        logo,
-        el('div', { class: 'cdoc-acc-nombre' }, [el('b', { text: 'CONECT Docentes' }), el('span', { text: 'ITS Purísima del Rincón' })]),
-        botonTema()
-      ]),
-      cfg.paso ? el('div', { class: 'cdoc-acc-paso', text: 'Paso ' + cfg.paso + ' de 2' }) : null,
-      el('h1', { class: 'cdoc-acc-titulo', text: cfg.titulo }),
-      el('p', { class: 'cdoc-acc-texto', text: (nombre ? 'Hola, ' + nombre + '. ' : '') + cfg.texto })
-    ]);
-    tarjeta.appendChild(form);
-    if (cfg.volver) tarjeta.appendChild(el('a', { class: 'cdoc-acc-volver', href: cfg.volver, text: '¿No eres tú? Cambiar de usuario' }));
-    tarjeta.appendChild(pie);
-    document.body.appendChild(el('div', { class: 'cdoc-acc-fondo' }, [tarjeta]));
-
-    // Título de la pestaña y foco
-    try { if (window.top === window || window.name === 'fraizq') window.top.document.title = 'CONECT Docentes · Acceso'; } catch (e) { /* nada */ }
-    setTimeout(() => { try { campo.focus({ preventScroll: true }); } catch (e) { campo.focus(); } }, 50);
-  }
-
-  const CSS_ACCESO = `
-html.cdoc-acceso{--a-p:#1b396a;--a-p2:#132a4f;--a-ac:#8a2036;--a-f:#f3f5f9;--a-s:#fff;--a-b:#dfe5ee;--a-t:#1a2433;--a-ts:#4b5768;--a-in:#fff;--a-en:#1d4f9e;--a-foco:rgba(29,79,158,.3);--a-av:#8f5200;--a-sombra:0 12px 32px rgba(16,24,40,.10);color-scheme:light}
-html.cdoc-acceso[data-cdoc-tema="dark"]{--a-p:#3a64aa;--a-p2:#4a75bd;--a-ac:#f0a3b3;--a-f:#0e141d;--a-s:#151d29;--a-b:#2a3546;--a-t:#e5e9f0;--a-ts:#a9b3c2;--a-in:#1a2331;--a-en:#9cbcf0;--a-foco:rgba(156,188,240,.35);--a-av:#f5c06a;--a-sombra:0 12px 32px rgba(0,0,0,.5);color-scheme:dark}
-html.cdoc-acceso,html.cdoc-acceso body{margin:0!important;padding:0!important;min-height:100%;background:var(--a-f)!important}
-html.cdoc-acceso body>:not(.cdoc-acc-fondo){display:none!important}
-.cdoc-acc-fondo{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px 16px;box-sizing:border-box;font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:var(--a-t);text-align:left}
-.cdoc-acc-fondo *{box-sizing:border-box}
-.cdoc-acc-tarjeta{width:100%;max-width:350px;background:var(--a-s);border:1px solid var(--a-b);border-radius:16px;padding:28px 24px 18px;box-shadow:var(--a-sombra)}
-.cdoc-acc-marca{display:flex;align-items:center;gap:12px;margin-bottom:24px}
-.cdoc-acc-logo{flex:none;width:42px;height:42px;border-radius:12px;background:var(--a-p);color:#fff;display:grid;place-items:center}
-.cdoc-acc-marca b{display:block;font-size:16px;line-height:1.2}
-.cdoc-acc-marca span{display:block;font-size:12.5px;color:var(--a-ts)}
-.cdoc-acc-nombre{flex:1;min-width:0}
-.cdoc-acc-tema{flex:none;width:38px;height:38px;border:1px solid var(--a-b);border-radius:10px;background:transparent;color:var(--a-ts);cursor:pointer;display:grid;place-items:center;padding:0}
-.cdoc-acc-tema:hover{background:var(--a-f);color:var(--a-t)}
-.cdoc-acc-tema:focus-visible{outline:3px solid var(--a-foco);outline-offset:2px}
-html.cdoc-cambiando-tema *,html.cdoc-cambiando-tema *::before{transition:background-color .3s ease,color .3s ease,border-color .3s ease!important}
-.cdoc-acc-paso{font-size:11.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--a-ac)}
-.cdoc-acc-titulo{font-size:22px;line-height:1.25;margin:2px 0 6px;font-weight:700;color:var(--a-t)}
-.cdoc-acc-texto{margin:0 0 20px;color:var(--a-ts);font-size:14px}
-.cdoc-acc-tarjeta form{margin:0}
-.cdoc-acc-tarjeta center{display:block;text-align:left}
-.cdoc-acc-tarjeta center>h3,.cdoc-acc-tarjeta center>h4,.cdoc-acc-tarjeta img{display:none}
-.cdoc-acc-etq{display:block;font-weight:600;font-size:13px;margin-bottom:6px;color:var(--a-t)}
-.cdoc-acc-campo{position:relative;margin-bottom:18px}
-.cdoc-acc-campo input{display:block;width:100%!important;font:inherit;font-size:16px;padding:11px 12px;border:1px solid var(--a-b);border-radius:10px;background:var(--a-in);color:var(--a-t);outline:none;transition:border-color .15s,box-shadow .15s}
-.cdoc-acc-campo input:focus{border-color:var(--a-p);box-shadow:0 0 0 4px var(--a-foco)}
-.cdoc-acc-campo.cdoc-con-ojo input{padding-right:48px}
-.cdoc-acc-ojo{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:38px;height:38px;border:0;border-radius:8px;background:transparent;color:var(--a-ts);cursor:pointer;display:grid;place-items:center;padding:0}
-.cdoc-acc-ojo:hover{background:var(--a-f);color:var(--a-t)}
-.cdoc-acc-ojo:focus-visible,.cdoc-acc-volver:focus-visible{outline:3px solid var(--a-foco);outline-offset:2px}
-.cdoc-acc-mayus{font-size:12.5px;color:var(--a-av);margin:-10px 0 14px}
-.cdoc-acc-mayus[hidden]{display:none}
-.cdoc-acc-btn{display:block;width:100%;font:inherit;font-weight:700;font-size:15px;padding:12px;border:0;border-radius:10px;background:var(--a-p);color:#fff;cursor:pointer;-webkit-appearance:none;appearance:none;transition:background .15s}
-.cdoc-acc-btn:hover{background:var(--a-p2)}
-.cdoc-acc-btn:focus-visible{outline:3px solid var(--a-foco);outline-offset:2px}
-.cdoc-acc-btn.cdoc-enviando{opacity:.6;cursor:progress;pointer-events:none}
-.cdoc-acc-volver{display:inline-block;margin-top:14px;font-size:13px;color:var(--a-en);text-decoration:none}
-.cdoc-acc-volver:hover{text-decoration:underline}
-.cdoc-acc-pie{margin:22px 0 0;padding-top:14px;border-top:1px solid var(--a-b);font-size:11.5px;color:var(--a-ts)}
-`;
-
-  function inyectarEstilosAcceso() {
-    if ($('#cdoc-estilos-acceso')) return;
-    const st = el('style', { id: 'cdoc-estilos-acceso' });
-    st.textContent = CSS_ACCESO;
-    (document.head || document.documentElement).appendChild(st);
-  }
-
-  /* ------------------------------------------------------------------------
      Arranque
      ------------------------------------------------------------------------ */
   function iniciar() {
-    const acceso = detectarAcceso();
-    // En el marco izquierdo: ensanchar durante el acceso, restaurar al llegar al menú
-    if (acceso) ajustarMarcos(true);
-    else if ($('img[src*="mnu_"]')) ajustarMarcos(false);
-    if (acceso) {
-      try { moduloAcceso(acceso); } catch (err) { console.error('[CONECT Mod Docentes] Acceso:', err); }
-      return;
-    }
-
     const campos = $$('input[name]').filter(i => RE_CAMPO.test(i.name));
     if (!campos.length || !campos[0].form) return;
     try {
@@ -1240,7 +1312,7 @@ html.cdoc-cambiando-tema *,html.cdoc-cambiando-tema *::before{transition:backgro
 
   // Exponer funciones puras para pruebas (Node)
   if (EN_NODE) {
-    module.exports = { evaluarValor, calcularFinal, normalizarControl, claveNombre, analizarMatriz, autoMapear, cruzar };
+    module.exports = { evaluarValor, calcularFinal, normalizarControl, claveNombre, analizarMatriz, autoMapear, cruzar, descargarPlantillaMejorada, leerPlantillaMejorada, ajustarIndicadores };
     return;
   }
 

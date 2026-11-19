@@ -11,7 +11,7 @@ import json
 import pathlib
 import zipfile
 
-VERSION = "1.1.1"
+VERSION = "1.2.0"
 RAIZ = pathlib.Path(__file__).resolve().parent
 SRC = RAIZ / "src"
 SHEETJS_VERSION = "0.18.5"
@@ -20,7 +20,7 @@ COMUN = {
     "manifest_version": 3,
     "name": "CONECT Mod Docentes (no oficial)",
     "version": VERSION,
-    "description": "Captura de calificaciones parciales desde Excel para el portal CONECT de docentes del ITS Purísima del Rincón.",
+    "description": "Rediseño del portal CONECT de docentes del ITS Purísima del Rincón y captura de calificaciones desde Excel.",
     "icons": {s: f"iconos/icono-{s}.png" for s in ("16", "32", "48", "128")},
     "content_scripts": [
         {
@@ -28,7 +28,7 @@ COMUN = {
                 "https://purisima.tecnm.mx/conect_docentes/*",
                 "http://purisima.tecnm.mx/conect_docentes/*",
             ],
-            "js": ["lib/xlsx.full.min.js", "conect-docentes.js"],
+            "js": ["lib/xlsx.full.min.js", "conect-docentes-diseno.js", "conect-docentes.js"],
             "run_at": "document_idle",
             "all_frames": True,
         }
@@ -50,7 +50,7 @@ USERSCRIPT_HEADER = f"""// ==UserScript==
 // @name         CONECT Mod Docentes - Captura desde Excel
 // @namespace    https://purisima.tecnm.mx/conect_docentes/
 // @version      {VERSION}
-// @description  Sube un Excel y asigna automáticamente las calificaciones parciales en el portal CONECT de docentes del ITSPR. Todo se procesa localmente.
+// @description  Rediseño del portal CONECT de docentes del ITSPR (modo oscuro, horario visual, grupos) y captura de calificaciones desde Excel. Todo se procesa localmente.
 // @author       Equipo CONECT Mod
 // @match        https://purisima.tecnm.mx/conect_docentes/*
 // @match        http://purisima.tecnm.mx/conect_docentes/*
@@ -66,6 +66,7 @@ def empaquetar(destino: pathlib.Path, manifest: dict) -> None:
     destino.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(destino, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+        z.write(SRC / "conect-docentes-diseno.js", "conect-docentes-diseno.js")
         z.write(SRC / "conect-docentes.js", "conect-docentes.js")
         z.write(SRC / "lib" / "xlsx.full.min.js", "lib/xlsx.full.min.js")
         for icono in sorted((SRC / "iconos").glob("*.png")):
@@ -79,7 +80,7 @@ def main() -> None:
 
     safari = RAIZ / "SAFARI" / "conect-mod-docentes.user.js"
     safari.parent.mkdir(parents=True, exist_ok=True)
-    codigo = (SRC / "conect-docentes.js").read_text(encoding="utf-8")
+    codigo = "\n;\n".join((SRC / nombre).read_text(encoding="utf-8") for nombre in ("conect-docentes-diseno.js", "conect-docentes.js"))
     safari.write_text(USERSCRIPT_HEADER + codigo, encoding="utf-8")
     print("OK", safari.relative_to(RAIZ))
 
