@@ -1,6 +1,6 @@
 # Textos para las tiendas
 
-Política de privacidad (ambas extensiones): https://github.com/Botello-Santos/conect-mod/blob/main/PRIVACIDAD.md
+Política de privacidad (ambas extensiones): https://botello-santos.github.io/conect-mod/privacidad.html
 Sitio / soporte: https://github.com/Botello-Santos/conect-mod
 
 ---

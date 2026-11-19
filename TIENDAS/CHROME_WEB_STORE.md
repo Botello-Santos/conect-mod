@@ -30,7 +30,7 @@ Panel: https://chrome.google.com/webstore/devconsole
 - **Uso de datos:** no marques ninguna casilla (no se recopila nada) y marca las tres certificaciones
   (no vendo datos, no los uso para fines ajenos, no los uso para créditos).
 - **URL de la política de privacidad:**
-  https://github.com/Botello-Santos/conect-mod/blob/main/PRIVACIDAD.md
+  https://botello-santos.github.io/conect-mod/privacidad.html
 
 ## 4. Pestaña "Distribución"
 - **Visibilidad:** Público
