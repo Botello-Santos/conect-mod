@@ -37,7 +37,7 @@ También funciona con Tampermonkey o Violentmonkey en cualquier navegador.
    - **Básica**: una columna por indicador, con las calificaciones actuales del portal.
    - **Mejorada** (basada en la lista real de un docente): los 3 parciales; cada trabajo por separado
      (T1, T2… con promedio y ponderado por indicador); *Puntos menos*; hoja **Puntos extra** por criterio
-     de evaluación, que se suma solo a la calificación final (nunca pasa de 100); hojas de *Asistencia* y
+     de evaluación, que se suma solo a la calificación final según el peso del criterio (5 pts en un criterio de 30 % = 1.5; "Otro" suma directo; nunca pasa de 100); hojas de *Asistencia* y
      *Segunda oportunidad*. Puedes insertar columnas para más trabajos dentro del bloque del indicador.
 3. Sube el archivo, revisa la vista previa (antes → después, y en la mejorada la final del Excel con sus
    extras/menos) y presiona *Aplicar* o *Aplicar y guardar*.

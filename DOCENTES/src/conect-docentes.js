@@ -818,19 +818,24 @@
     let c = 3;
     for (let p = 1; p <= 3; p++) {
       const ini = c;
-      const criterios = inds.map(tituloInd).concat(['OTRO']);
-      criterios.forEach(t => {
-        hx.put(1, c, t); hx.put(2, c, 'pts'); hx.ancho(c, Math.max(10, Math.min(22, t.length)));
+      // Cada criterio vale según su peso (5 pts en un indicador de 30% = 1.5 sobre la final); OTRO suma directo
+      const criterios = inds.map(ind => ({ titulo: tituloInd(ind), peso: ind.peso, etq: 'pts × ' + ind.peso + '%' }))
+        .concat([{ titulo: 'OTRO (directo a la final)', peso: 100, etq: 'pts directos' }]);
+      const terminos = [];
+      criterios.forEach(cr => {
+        hx.put(1, c, cr.titulo); hx.put(2, c, cr.etq); hx.ancho(c, Math.max(11, Math.min(22, cr.titulo.length)));
         hx.estilo.est(1, c, EST.indicador(p)); hx.estilo.est(2, c, EST.etiqueta(p));
         hx.estilo.rango(FILA_DATOS, c, ultima, c, EST.extra);
+        terminos.push({ c, peso: cr.peso });
         c++;
       });
       totalExtra[p] = c;
-      hx.put(1, c, 'TOTAL EXTRA'); hx.merge(1, c, 2, c); hx.ancho(c, 12);
+      hx.put(1, c, 'TOTAL EXTRA (sobre la final)'); hx.merge(1, c, 2, c); hx.ancho(c, 14);
       hx.estilo.rango(1, c, 2, c, EST.totalEnc);
       for (let r = FILA_DATOS; r <= ultima; r++) {
         const rango = celda(r, ini) + ':' + celda(r, c - 1);
-        hx.put(r, c, { f: 'IF(COUNT(' + rango + ')=0,"",SUM(' + rango + '))' });
+        const suma = terminos.map(t => 'N(' + celda(r, t.c) + ')' + (t.peso === 100 ? '' : '*' + t.peso + '/100')).join('+');
+        hx.put(r, c, { f: 'IF(COUNT(' + rango + ')=0,"",' + suma + ')' });
         hx.estilo.est(r, c, EST.totalExtra);
       }
       c++;
@@ -953,6 +958,7 @@
       ['1. En "Calificaciones" captura cada trabajo por separado (T1, T2, ...). El PROMEDIO ignora las celdas vacías.'],
       ['2. ¿Más trabajos? Inserta columnas dentro del bloque del indicador (antes de PROMEDIO): la extensión las detecta sola.'],
       ['3. PUNTOS MENOS se restan y "Puntos extra" se suma, ambos solo sobre la calificación FINAL. La final nunca pasa de 100 ni baja de 0.'],
+      ['   Los extras de cada criterio valen según su peso (5 pts en un criterio de 30% = 1.5 sobre la final). OTRO suma directo.'],
       ['4. No cambies la columna "No. Control": con ella se identifica a cada alumno.'],
       ['5. En CONECT abre la captura del parcial y sube este archivo: se lee el bloque del parcial que estás capturando.'],
       ['6. El portal guarda una calificación por indicador; para que su final coincida con la tuya, la extensión reparte'],
@@ -1081,12 +1087,20 @@
       const bx = bloqueParcial(mx, gx, modelo.parcial);
       const cx = columnaPorEncabezado(mx, /CONTROL/, bx.ini < 0 ? 3 : bx.ini);
       if (bx.ini >= 0 && cx >= 0) {
+        // Peso de cada columna: el del indicador de su encabezado (OTRO u otra columna = directo)
         const cols = [];
-        for (let c = bx.ini; c <= bx.fin; c++) if (!/^TOTAL/.test(grupoColumna(mx, gx, c))) cols.push(c);
+        for (let c = bx.ini; c <= bx.fin; c++) {
+          const g = grupoColumna(mx, gx, c);
+          if (/^TOTAL/.test(g)) continue;
+          const num = /^(\d+) /.exec(g);
+          let ind = num ? inds.find(x => x.num === num[1]) : null;
+          if (!ind) ind = inds.find(x => g.includes(normalizar(x.nombre).slice(0, 10)));
+          cols.push({ c, factor: ind ? ind.peso / 100 : 1 });
+        }
         mx.slice(FILA_DATOS).forEach(f => {
           const ctrl = normalizarControl(f[cx]);
           if (!ctrl) return;
-          const s = cols.reduce((a, c) => a + (numeroCelda(f[c]) || 0), 0);
+          const s = cols.reduce((a, k) => a + (numeroCelda(f[k.c]) || 0) * k.factor, 0);
           if (s) extras.set(ctrl, (extras.get(ctrl) || 0) + s);
         });
       }
