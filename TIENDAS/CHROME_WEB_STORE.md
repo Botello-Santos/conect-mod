@@ -18,6 +18,7 @@ Panel: https://chrome.google.com/webstore/devconsole
   `5-plantillas.png`, `4-captura-excel.png`, `2-grupos-oscuro.png`, `3-horario.png`, `1-inicio.png`
   (máximo 5).
 - **Mosaico promocional pequeño (440×280):** `TIENDAS\docentes\promo-440x280.png`
+- **Mosaico de marquesina (1400×560):** `TIENDAS\docentes\marquesina-1400x560.png`
 - **URL de la página principal:** https://github.com/Botello-Santos/conect-mod
 - **URL de asistencia:** https://github.com/Botello-Santos/conect-mod/issues
 
