@@ -998,12 +998,85 @@ input.cdoc-reprobado{color:#b42318!important;font-weight:700}
   }
   const ICONO_BIRRETE = ['M22 10 12 5 2 10l10 5 10-5Z', 'M6 12v5c3 2 9 2 12 0v-5', 'M22 10v6'];
   const ICONO_OJO = ['M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z', 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z'];
+  const ICONO_SOL = ['M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z', 'M12 2v2', 'M12 20v2', 'm4.93 4.93 1.41 1.41', 'm17.66 17.66 1.41 1.41', 'M2 12h2', 'M20 12h2', 'm6.34 17.66-1.41 1.41', 'm19.07 4.93-1.41 1.41'];
+  const ICONO_LUNA = ['M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z'];
+
+  /* ------------------------------------------------------------------------
+     Tema claro / oscuro: misma lógica y misma preferencia que la versión de
+     estudiantes (localStorage "cmod.tema": 'auto' | 'light' | 'dark'). Ambos
+     portales están en el mismo dominio, así que comparten la elección.
+     ------------------------------------------------------------------------ */
+  const PREF_TEMA = 'cmod.tema';
+  function leerPref(clave, porDefecto) {
+    try { const v = window.localStorage.getItem(clave); return v === null ? porDefecto : v; } catch (e) { return porDefecto; }
+  }
+  function guardarPref(clave, valor) {
+    try { window.localStorage.setItem(clave, String(valor)); } catch (e) { /* almacenamiento no disponible */ }
+  }
+  function temaEfectivo() {
+    const t = leerPref(PREF_TEMA, 'auto');
+    if (t === 'light' || t === 'dark') return t;
+    try { return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; } catch (e) { return 'light'; }
+  }
+  function aplicarTema() {
+    const t = temaEfectivo();
+    document.documentElement.setAttribute('data-cdoc-tema', t);
+    document.dispatchEvent(new CustomEvent('cdoc:tema'));
+    // App de Android: color de la barra de estado
+    try {
+      if (window.CMODAndroid && typeof window.CMODAndroid.postMessage === 'function') {
+        window.CMODAndroid.postMessage(JSON.stringify({ tipo: 'tema', valor: t }));
+      }
+    } catch (e) { /* nada */ }
+  }
+  function suavizarCambioTema() {
+    const raiz = document.documentElement;
+    raiz.classList.add('cdoc-cambiando-tema');
+    clearTimeout(suavizarCambioTema.t);
+    suavizarCambioTema.t = setTimeout(() => raiz.classList.remove('cdoc-cambiando-tema'), 400);
+  }
+  function alternarTema() {
+    suavizarCambioTema();
+    guardarPref(PREF_TEMA, temaEfectivo() === 'dark' ? 'light' : 'dark');
+    aplicarTema(); // los demás marcos se enteran por el evento "storage"
+  }
+  function instalarTema() {
+    aplicarTema();
+    window.addEventListener('storage', e => {
+      if (e.key === PREF_TEMA) { suavizarCambioTema(); aplicarTema(); }
+    });
+    try {
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+        if (leerPref(PREF_TEMA, 'auto') === 'auto') aplicarTema();
+      });
+    } catch (e) { /* navegador antiguo */ }
+    // Alt + T, igual que en la versión de estudiantes
+    document.addEventListener('keydown', e => {
+      if (e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyT') { e.preventDefault(); alternarTema(); }
+    });
+  }
+  function botonTema() {
+    const b = el('button', { type: 'button', class: 'cdoc-acc-tema' });
+    const pintar = () => {
+      const oscuro = temaEfectivo() === 'dark';
+      b.replaceChildren(icono(oscuro ? ICONO_SOL : ICONO_LUNA, 18));
+      const txt = oscuro ? 'Activar modo claro (Alt + T)' : 'Activar modo oscuro (Alt + T)';
+      b.setAttribute('aria-label', txt);
+      b.title = txt;
+    };
+    b.addEventListener('click', () => { alternarTema(); pintar(); });
+    document.addEventListener('cdoc:tema', pintar);
+    pintar();
+    return b;
+  }
+
   const ICONO_OJO_NO = ['M3 3l18 18', 'M10.6 5.1A10 10 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4.2', 'M6.6 6.6C3.8 8.4 2 12 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.4-1.6', 'M9.9 9.9a3 3 0 0 0 4.2 4.2'];
 
   function moduloAcceso(acc) {
     const { form, campo, cfg } = acc;
     const enviar = Array.from(form.elements).find(e => e.type === 'submit');
     document.documentElement.classList.add('cdoc-acceso');
+    instalarTema();
     inyectarEstilosAcceso();
     if (!$('meta[name="viewport"]')) {
       const meta = el('meta', { name: 'viewport', content: 'width=device-width, initial-scale=1' });
@@ -1072,7 +1145,8 @@ input.cdoc-reprobado{color:#b42318!important;font-weight:700}
     const tarjeta = el('main', { class: 'cdoc-acc-tarjeta' }, [
       el('div', { class: 'cdoc-acc-marca' }, [
         logo,
-        el('div', {}, [el('b', { text: 'CONECT Docentes' }), el('span', { text: 'ITS Purísima del Rincón' })])
+        el('div', { class: 'cdoc-acc-nombre' }, [el('b', { text: 'CONECT Docentes' }), el('span', { text: 'ITS Purísima del Rincón' })]),
+        botonTema()
       ]),
       cfg.paso ? el('div', { class: 'cdoc-acc-paso', text: 'Paso ' + cfg.paso + ' de 2' }) : null,
       el('h1', { class: 'cdoc-acc-titulo', text: cfg.titulo }),
@@ -1090,7 +1164,7 @@ input.cdoc-reprobado{color:#b42318!important;font-weight:700}
 
   const CSS_ACCESO = `
 html.cdoc-acceso{--a-p:#1b396a;--a-p2:#132a4f;--a-ac:#8a2036;--a-f:#f3f5f9;--a-s:#fff;--a-b:#dfe5ee;--a-t:#1a2433;--a-ts:#4b5768;--a-in:#fff;--a-en:#1d4f9e;--a-foco:rgba(29,79,158,.3);--a-av:#8f5200;--a-sombra:0 12px 32px rgba(16,24,40,.10);color-scheme:light}
-@media (prefers-color-scheme:dark){html.cdoc-acceso{--a-p:#3a64aa;--a-p2:#4a75bd;--a-ac:#f0a3b3;--a-f:#0e141d;--a-s:#151d29;--a-b:#2a3546;--a-t:#e5e9f0;--a-ts:#a9b3c2;--a-in:#1a2331;--a-en:#9cbcf0;--a-foco:rgba(156,188,240,.35);--a-av:#f5c06a;--a-sombra:0 12px 32px rgba(0,0,0,.5);color-scheme:dark}}
+html.cdoc-acceso[data-cdoc-tema="dark"]{--a-p:#3a64aa;--a-p2:#4a75bd;--a-ac:#f0a3b3;--a-f:#0e141d;--a-s:#151d29;--a-b:#2a3546;--a-t:#e5e9f0;--a-ts:#a9b3c2;--a-in:#1a2331;--a-en:#9cbcf0;--a-foco:rgba(156,188,240,.35);--a-av:#f5c06a;--a-sombra:0 12px 32px rgba(0,0,0,.5);color-scheme:dark}
 html.cdoc-acceso,html.cdoc-acceso body{margin:0!important;padding:0!important;min-height:100%;background:var(--a-f)!important}
 html.cdoc-acceso body>:not(.cdoc-acc-fondo){display:none!important}
 .cdoc-acc-fondo{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px 16px;box-sizing:border-box;font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:var(--a-t);text-align:left}
@@ -1100,6 +1174,11 @@ html.cdoc-acceso body>:not(.cdoc-acc-fondo){display:none!important}
 .cdoc-acc-logo{flex:none;width:42px;height:42px;border-radius:12px;background:var(--a-p);color:#fff;display:grid;place-items:center}
 .cdoc-acc-marca b{display:block;font-size:16px;line-height:1.2}
 .cdoc-acc-marca span{display:block;font-size:12.5px;color:var(--a-ts)}
+.cdoc-acc-nombre{flex:1;min-width:0}
+.cdoc-acc-tema{flex:none;width:38px;height:38px;border:1px solid var(--a-b);border-radius:10px;background:transparent;color:var(--a-ts);cursor:pointer;display:grid;place-items:center;padding:0}
+.cdoc-acc-tema:hover{background:var(--a-f);color:var(--a-t)}
+.cdoc-acc-tema:focus-visible{outline:3px solid var(--a-foco);outline-offset:2px}
+html.cdoc-cambiando-tema *,html.cdoc-cambiando-tema *::before{transition:background-color .3s ease,color .3s ease,border-color .3s ease!important}
 .cdoc-acc-paso{font-size:11.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--a-ac)}
 .cdoc-acc-titulo{font-size:22px;line-height:1.25;margin:2px 0 6px;font-weight:700;color:var(--a-t)}
 .cdoc-acc-texto{margin:0 0 20px;color:var(--a-ts);font-size:14px}
