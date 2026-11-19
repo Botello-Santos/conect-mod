@@ -403,7 +403,7 @@ html.cdoc-cambiando-tema *,html.cdoc-cambiando-tema *::before{transition:backgro
   const MINUSCULAS = new Set(['de', 'del', 'la', 'las', 'los', 'el', 'y', 'e', 'o', 'u', 'para', 'por', 'en', 'a', 'con']);
   function tituloBonito(t) {
     return String(t || '').toLowerCase().split(/\s+/).filter(Boolean)
-      .map((p, i) => (i > 0 && MINUSCULAS.has(p) ? p : p.charAt(0).toUpperCase() + p.slice(1))).join(' ');
+      .map((p, i) => (/^(i|ii|iii|iv|v|vi|vii|viii|ix|x)$/.test(p) ? p.toUpperCase() : (i > 0 && MINUSCULAS.has(p) ? p : p.charAt(0).toUpperCase() + p.slice(1)))).join(' ');
   }
   function urlPagina(q, pageId) {
     return 'cat_contenido.asp?' + q + '&tipo=cat&page_id=' + pageId;
