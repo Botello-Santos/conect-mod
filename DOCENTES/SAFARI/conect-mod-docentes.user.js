@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CONECT Mod Docentes - Captura desde Excel
 // @namespace    https://purisima.tecnm.mx/conect_docentes/
-// @version      1.2.1
+// @version      1.3.0
 // @description  Rediseño del portal CONECT de docentes del ITSPR (modo oscuro, horario visual, grupos) y captura de calificaciones desde Excel. Todo se procesa localmente.
 // @author       Equipo CONECT Mod
 // @match        https://purisima.tecnm.mx/conect_docentes/*
@@ -1754,7 +1754,224 @@ html.cdoc-mod body.cdoc-captura input[type=reset]{background:transparent!importa
   }
 
   /* ------------------------------------------------------------------------
-     Plantilla Excel
+     Estilos de los .xlsx
+     SheetJS Community no escribe estilos. El libro se genera normal y luego se
+     abre el propio .xlsx (es un ZIP) con XLSX.CFB para agregar una hoja de
+     estilos propia (styles.xml) y el atributo s="" de cada celda, además de
+     alturas de fila y encabezados fijos. Si algo falla, se guarda sin estilos.
+     ------------------------------------------------------------------------ */
+  const PALETA_PARCIAL = {
+    1: { osc: '1F4E79', med: 'BDD7EE', cla: 'DDEBF7', txt: '1F3864' },
+    2: { osc: '375623', med: 'C6E0B4', cla: 'E2EFDA', txt: '274E13' },
+    3: { osc: '5B3A8C', med: 'D9CCEE', cla: 'EEE7F7', txt: '3F2766' }
+  };
+  const EST = {
+    encabezado: { fill: '1B396A', color: 'FFFFFF', b: 1, h: 'center', wrap: 1 },
+    parcial: p => ({ fill: PALETA_PARCIAL[p].osc, color: 'FFFFFF', b: 1, sz: 12, h: 'center' }),
+    indicador: p => ({ fill: PALETA_PARCIAL[p].med, color: PALETA_PARCIAL[p].txt, b: 1, h: 'center', wrap: 1 }),
+    etiqueta: p => ({ fill: PALETA_PARCIAL[p].cla, color: PALETA_PARCIAL[p].txt, b: 1, sz: 10, h: 'center', wrap: 1 }),
+    menosEnc: { fill: 'F4CCCC', color: '9C0006', b: 1, h: 'center', wrap: 1 },
+    finalEnc: { fill: 'FFD966', color: '7F6000', b: 1, h: 'center', wrap: 1 },
+    totalEnc: { fill: 'A9D08E', color: '274E13', b: 1, h: 'center', wrap: 1 },
+    centro: { h: 'center' },
+    nombre: { h: 'left' },
+    control: { h: 'center', color: '404040' },
+    calculo: { fill: 'F2F2F2', color: '404040', h: 'center', fmt: '0.00' },
+    menos: { fill: 'FDECEC', color: 'C00000', h: 'center' },
+    final: { fill: 'FFF2CC', b: 1, h: 'center', fmt: '0.0' },
+    extra: { fill: 'F0F7EC', h: 'center' },
+    totalExtra: { fill: 'E2EFDA', b: 1, h: 'center', fmt: '0.##' },
+    fecha: { fill: 'DDEBF7', color: '1F3864', b: 1, sz: 9, h: 'center', fmt: 'dd/mm' },
+    titulo: { b: 1, sz: 14, color: '1B396A', borde: false },
+    etiquetaInfo: { b: 1, color: '1B396A', borde: false },
+    texto: { borde: false, wrap: 1 }
+  };
+
+  const escXml = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  function xmlEstilos(specs) {
+    const fuentes = ['<font><sz val="11"/><color theme="1"/><name val="Calibri"/><family val="2"/></font>'];
+    const idFuente = new Map();
+    const rellenos = ['<fill><patternFill patternType="none"/></fill>', '<fill><patternFill patternType="gray125"/></fill>'];
+    const idRelleno = new Map();
+    const formatos = [];
+    const idFormato = new Map();
+    const lin = '<color rgb="FFBFC8D6"/>';
+    const bordes = ['<border><left/><right/><top/><bottom/><diagonal/></border>',
+      '<border><left style="thin">' + lin + '</left><right style="thin">' + lin + '</right><top style="thin">' + lin + '</top><bottom style="thin">' + lin + '</bottom><diagonal/></border>'];
+    const xfs = ['<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'];
+    specs.slice(1).forEach(s => {
+      const kf = [s.b ? 1 : 0, s.i ? 1 : 0, s.sz || 11, s.color || ''].join('|');
+      if (!idFuente.has(kf)) {
+        idFuente.set(kf, fuentes.length);
+        fuentes.push('<font>' + (s.b ? '<b/>' : '') + (s.i ? '<i/>' : '') + '<sz val="' + (s.sz || 11) + '"/>' +
+          (s.color ? '<color rgb="FF' + s.color + '"/>' : '<color theme="1"/>') + '<name val="Calibri"/><family val="2"/></font>');
+      }
+      let relleno = 0;
+      if (s.fill) {
+        if (!idRelleno.has(s.fill)) {
+          idRelleno.set(s.fill, rellenos.length);
+          rellenos.push('<fill><patternFill patternType="solid"><fgColor rgb="FF' + s.fill + '"/><bgColor indexed="64"/></patternFill></fill>');
+        }
+        relleno = idRelleno.get(s.fill);
+      }
+      let formato = 0;
+      if (s.fmt) {
+        if (!idFormato.has(s.fmt)) {
+          const id = 164 + formatos.length;
+          idFormato.set(s.fmt, id);
+          formatos.push('<numFmt numFmtId="' + id + '" formatCode="' + escXml(s.fmt) + '"/>');
+        }
+        formato = idFormato.get(s.fmt);
+      }
+      const alineacion = '<alignment' + (s.h ? ' horizontal="' + s.h + '"' : '') + ' vertical="center"' + (s.wrap ? ' wrapText="1"' : '') + '/>';
+      xfs.push('<xf numFmtId="' + formato + '" fontId="' + idFuente.get(kf) + '" fillId="' + relleno + '" borderId="' + (s.borde === false ? 0 : 1) +
+        '" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">' + alineacion + '</xf>');
+    });
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' +
+      '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+      (formatos.length ? '<numFmts count="' + formatos.length + '">' + formatos.join('') + '</numFmts>' : '') +
+      '<fonts count="' + fuentes.length + '">' + fuentes.join('') + '</fonts>' +
+      '<fills count="' + rellenos.length + '">' + rellenos.join('') + '</fills>' +
+      '<borders count="' + bordes.length + '">' + bordes.join('') + '</borders>' +
+      '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+      '<cellXfs count="' + xfs.length + '">' + xfs.join('') + '</cellXfs>' +
+      '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
+      '<dxfs count="0"/><tableStyles count="0" defaultTableStyle="TableStyleMedium9" defaultPivotStyle="PivotStyleMedium4"/>' +
+      '</styleSheet>';
+  }
+
+  /** Agrega s="" a las celdas (creando las vacías que tengan estilo), alturas y panel fijo. */
+  function estilizarHojaXml(xml, meta, idDe) {
+    const porFila = new Map();
+    meta.celdas.forEach((spec, addr) => {
+      const d = XLSX.utils.decode_cell(addr);
+      if (!porFila.has(d.r + 1)) porFila.set(d.r + 1, []);
+      porFila.get(d.r + 1).push({ addr, c: d.c, s: idDe(spec) });
+    });
+    xml = xml.replace(/<sheetData\/>|<sheetData>([\s\S]*?)<\/sheetData>/, (todo, cuerpo) => {
+      const filas = new Map();
+      (cuerpo || '').replace(/<row\b([^>]*?)(?:\/>|>([\s\S]*?)<\/row>)/g, (m, at, cont) => {
+        const r = +/\br="(\d+)"/.exec(at)[1];
+        filas.set(r, { at, cont: cont || '' });
+        return '';
+      });
+      porFila.forEach((_, r) => { if (!filas.has(r)) filas.set(r, { at: ' r="' + r + '"', cont: '' }); });
+      Object.keys(meta.altos).forEach(r => { r = +r; if (!filas.has(r)) filas.set(r, { at: ' r="' + r + '"', cont: '' }); });
+      const salida = Array.from(filas.keys()).sort((a, b) => a - b).map(r => {
+        const f = filas.get(r);
+        const celdas = [];
+        f.cont.replace(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g, (m, at, interior) => {
+          const addr = /\br="([A-Z]+\d+)"/.exec(at)[1];
+          celdas.push({ addr, c: XLSX.utils.decode_cell(addr).c, at: at.replace(/\ss="\d+"/, ''), interior: interior == null ? null : interior });
+          return '';
+        });
+        (porFila.get(r) || []).forEach(e => {
+          let x = celdas.find(k => k.addr === e.addr);
+          if (!x) { x = { addr: e.addr, c: e.c, at: ' r="' + e.addr + '"', interior: null }; celdas.push(x); }
+          x.s = e.s;
+        });
+        celdas.sort((a, b) => a.c - b.c);
+        let at = f.at.replace(/\s(?:ht|customHeight|spans)="[^"]*"/g, '');
+        if (meta.altos[r]) at += ' ht="' + meta.altos[r] + '" customHeight="1"';
+        return '<row' + at + '>' + celdas.map(k => '<c' + k.at + (k.s ? ' s="' + k.s + '"' : '') + (k.interior == null ? '/>' : '>' + k.interior + '</c>')).join('') + '</row>';
+      });
+      return '<sheetData>' + salida.join('') + '</sheetData>';
+    });
+    if (meta.fijo) {
+      const { filas, cols } = meta.fijo;
+      const tl = XLSX.utils.encode_cell({ r: filas, c: cols });
+      const panel = cols && filas ? 'bottomRight' : (filas ? 'bottomLeft' : 'topRight');
+      const pane = '<pane' + (cols ? ' xSplit="' + cols + '"' : '') + (filas ? ' ySplit="' + filas + '"' : '') +
+        ' topLeftCell="' + tl + '" activePane="' + panel + '" state="frozen"/><selection pane="' + panel + '" activeCell="' + tl + '" sqref="' + tl + '"/>';
+      xml = xml.replace(/<sheetView\b([^>]*?)\/>/, '<sheetView$1>' + pane + '</sheetView>');
+    }
+    return xml;
+  }
+
+  function aplicarEstilos(bytes, metas) {
+    const CFB = XLSX.CFB;
+    const zip = CFB.read(bytes, { type: 'array' });
+    const specs = [null];
+    const indice = new Map();
+    const idDe = spec => {
+      const k = JSON.stringify(spec);
+      if (!indice.has(k)) { indice.set(k, specs.length); specs.push(spec); }
+      return indice.get(k);
+    };
+    const leer = f => new TextDecoder('utf-8').decode(f.content);
+    const escribir = (f, texto) => { f.content = new TextEncoder().encode(texto); f.size = f.content.length; };
+    metas.forEach((meta, i) => {
+      if (!meta) return;
+      const f = CFB.find(zip, '/xl/worksheets/sheet' + (i + 1) + '.xml');
+      if (f) escribir(f, estilizarHojaXml(leer(f), meta, idDe));
+    });
+    const st = CFB.find(zip, '/xl/styles.xml');
+    escribir(st, xmlEstilos(specs));
+    return new Uint8Array(CFB.write(zip, { fileType: 'zip', type: 'array' }));
+  }
+
+  /** Metadatos de estilo de una hoja: celdas \u2192 estilo, alturas de fila y panel fijo. */
+  function nuevoMeta() {
+    const meta = { celdas: new Map(), altos: {}, fijo: null };
+    return {
+      meta,
+      est(r, c, spec) { meta.celdas.set(XLSX.utils.encode_cell({ r, c }), spec); },
+      rango(r1, c1, r2, c2, spec) { for (let r = r1; r <= r2; r++) for (let c = c1; c <= c2; c++) this.est(r, c, spec); },
+      alto(r, ht) { meta.altos[r + 1] = ht; },
+      fijar(filas, cols) { meta.fijo = { filas, cols }; }
+    };
+  }
+
+  function bytesABase64(bytes) {
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(bin);
+  }
+
+  const MIME_XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+  function guardarLibro(wb, nombre, metas) {
+    let bytes = new Uint8Array(XLSX.write(wb, { type: 'array', bookType: 'xlsx' }));
+    if (metas) {
+      try { bytes = aplicarEstilos(bytes, metas); } catch (err) { console.warn('[CONECT Mod Docentes] Plantilla sin estilos:', err); }
+    }
+    // Pruebas automatizadas
+    if (typeof window.__cdocGuardar === 'function') { window.__cdocGuardar(nombre, bytes); return; }
+    // En la app de Android (WebView) las descargas blob: no funcionan: se manda el archivo a la app
+    if (window.CMODAndroid && typeof window.CMODAndroid.postMessage === 'function') {
+      window.CMODAndroid.postMessage(JSON.stringify({ tipo: 'descargar', nombre, mime: MIME_XLSX, base64: bytesABase64(bytes) }));
+      return;
+    }
+    const url = URL.createObjectURL(new Blob([bytes], { type: MIME_XLSX }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = nombre;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 2000);
+  }
+
+  function nombrePlantilla(modelo, sufijo) {
+    return 'Calificaciones_' + (modelo.claveGrupo || 'grupo').replace(/[^\w-]+/g, '') + '_' + sufijo + '.xlsx';
+  }
+
+  function hojaInfo(filas) {
+    const ws = XLSX.utils.aoa_to_sheet(filas);
+    ws['!cols'] = [{ wch: 32 }, { wch: 90 }];
+    const m = nuevoMeta();
+    m.est(0, 0, EST.titulo);
+    m.alto(0, 24);
+    filas.forEach((f, r) => {
+      if (r === 0 || !f.length) return;
+      if (f.length > 1) { m.est(r, 0, EST.etiquetaInfo); m.est(r, 1, EST.texto); } else if (/^[A-ZÁÉÍÓÚ]/.test(String(f[0])) && !/^\d/.test(String(f[0]))) m.est(r, 0, EST.etiquetaInfo);
+    });
+    return { ws, meta: m.meta };
+  }
+
+  /* ------------------------------------------------------------------------
+     Plantilla básica: una columna por indicador
      ------------------------------------------------------------------------ */
   function descargarPlantilla(modelo) {
     const encInd = modelo.indicadores.map(ind => ind.num + ' - ' + ind.nombre + ' (' + ind.peso + '%)');
@@ -1768,10 +1985,19 @@ html.cdoc-mod body.cdoc-captura input[type=reset]{background:transparent!importa
       aoa.push(fila);
     });
     const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws['!cols'] = [{ wch: 6 }, { wch: 14 }, { wch: 38 }].concat(encInd.map(e => ({ wch: Math.max(12, Math.min(30, e.length)) })));
+    ws['!cols'] = [{ wch: 6 }, { wch: 14 }, { wch: 38 }].concat(encInd.map(e => ({ wch: Math.max(14, Math.min(30, e.length)) })));
     ws['!autofilter'] = { ref: 'A1:' + letraColumna(aoa[0].length - 1) + aoa.length };
+    const m = nuevoMeta();
+    m.rango(0, 0, 0, 2, EST.encabezado);
+    m.rango(0, 3, 0, 2 + encInd.length, EST.parcial(1));
+    for (let r = 1; r < aoa.length; r++) {
+      m.est(r, 0, EST.centro); m.est(r, 1, EST.control); m.est(r, 2, EST.nombre);
+      for (let c = 3; c < 3 + encInd.length; c++) m.est(r, c, EST.centro);
+    }
+    m.alto(0, 36);
+    m.fijar(1, 3);
 
-    const info = XLSX.utils.aoa_to_sheet([
+    const info = hojaInfo([
       ['CONECT Mod Docentes - Plantilla de captura'],
       [],
       ['Grupo', modelo.grupo],
@@ -1786,31 +2012,11 @@ html.cdoc-mod body.cdoc-captura input[type=reset]{background:transparent!importa
       ['4. Menores a la mínima aprobatoria se truncan; las demás se redondean (igual que el portal).'],
       ['5. En CONECT, abre la captura del parcial, sube este archivo, revisa la vista previa y presiona Guardar.']
     ]);
-    info['!cols'] = [{ wch: 32 }, { wch: 60 }];
 
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Calificaciones');
-    XLSX.utils.book_append_sheet(wb, info, 'Info');
-    guardarLibro(wb, nombrePlantilla(modelo, 'basica_P' + modelo.parcial));
-  }
-
-  function nombrePlantilla(modelo, sufijo) {
-    return 'Calificaciones_' + (modelo.claveGrupo || 'grupo').replace(/[^\w-]+/g, '') + '_' + sufijo + '.xlsx';
-  }
-
-  function guardarLibro(wb, nombre) {
-    // En la app de Android (WebView) las descargas blob: no funcionan: se manda el archivo a la app
-    if (window.CMODAndroid && typeof window.CMODAndroid.postMessage === 'function') {
-      const base64 = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
-      window.CMODAndroid.postMessage(JSON.stringify({
-        tipo: 'descargar',
-        nombre,
-        mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        base64
-      }));
-      return;
-    }
-    XLSX.writeFile(wb, nombre);
+    XLSX.utils.book_append_sheet(wb, info.ws, 'Info');
+    guardarLibro(wb, nombrePlantilla(modelo, 'basica_P' + modelo.parcial), [m.meta, info.meta]);
   }
 
   /* ------------------------------------------------------------------------
@@ -1831,10 +2037,12 @@ html.cdoc-mod body.cdoc-captura input[type=reset]{background:transparent!importa
     const ws = {};
     const merges = [];
     const cols = [];
+    const estilo = nuevoMeta();
     let maxR = 0;
     let maxC = 0;
     return {
       cols,
+      estilo,
       put(r, c, v) {
         if (v == null || v === '') return;
         const a = XLSX.utils.encode_cell({ r, c });
@@ -1864,8 +2072,15 @@ html.cdoc-mod body.cdoc-captura input[type=reset]{background:transparent!importa
 
   function columnasFijas(h, modelo) {
     ['Equipo', 'No. Control', 'Nombre'].forEach((t, c) => { h.put(0, c, t); h.merge(0, c, 2, c); });
+    h.estilo.rango(0, 0, 2, 2, EST.encabezado);
     h.ancho(0, 8); h.ancho(1, 14); h.ancho(2, 36);
-    modelo.alumnos.forEach((al, i) => { h.put(FILA_DATOS + i, 1, al.control); h.put(FILA_DATOS + i, 2, al.nombre); });
+    modelo.alumnos.forEach((al, i) => {
+      const r = FILA_DATOS + i;
+      h.put(r, 1, al.control); h.put(r, 2, al.nombre);
+      h.estilo.est(r, 0, EST.centro); h.estilo.est(r, 1, EST.control); h.estilo.est(r, 2, EST.nombre);
+    });
+    h.estilo.alto(0, 22); h.estilo.alto(1, 46); h.estilo.alto(2, 30);
+    h.estilo.fijar(FILA_DATOS, 3);
   }
 
   function descargarPlantillaMejorada(modelo) {
@@ -1882,15 +2097,23 @@ html.cdoc-mod body.cdoc-captura input[type=reset]{background:transparent!importa
     for (let p = 1; p <= 3; p++) {
       const ini = c;
       const criterios = inds.map(tituloInd).concat(['OTRO']);
-      criterios.forEach(t => { hx.put(1, c, t); hx.put(2, c, 'pts'); hx.ancho(c, Math.max(10, Math.min(22, t.length))); c++; });
+      criterios.forEach(t => {
+        hx.put(1, c, t); hx.put(2, c, 'pts'); hx.ancho(c, Math.max(10, Math.min(22, t.length)));
+        hx.estilo.est(1, c, EST.indicador(p)); hx.estilo.est(2, c, EST.etiqueta(p));
+        hx.estilo.rango(FILA_DATOS, c, ultima, c, EST.extra);
+        c++;
+      });
       totalExtra[p] = c;
       hx.put(1, c, 'TOTAL EXTRA'); hx.merge(1, c, 2, c); hx.ancho(c, 12);
+      hx.estilo.rango(1, c, 2, c, EST.totalEnc);
       for (let r = FILA_DATOS; r <= ultima; r++) {
         const rango = celda(r, ini) + ':' + celda(r, c - 1);
         hx.put(r, c, { f: 'IF(COUNT(' + rango + ')=0,"",SUM(' + rango + '))' });
+        hx.estilo.est(r, c, EST.totalExtra);
       }
       c++;
       hx.put(0, ini, 'PARCIAL ' + p); hx.merge(0, ini, 0, c - 1);
+      hx.estilo.rango(0, ini, 0, c - 1, EST.parcial(p));
     }
 
     // --- Calificaciones
@@ -1900,63 +2123,103 @@ html.cdoc-mod body.cdoc-captura input[type=reset]{background:transparent!importa
     for (let p = 1; p <= 3; p++) {
       const ini = c;
       const menos = c;
-      h.put(1, c, 'PUNTOS MENOS'); h.merge(1, c, 2, c); h.ancho(c, 9); c++;
+      h.put(1, c, 'PUNTOS MENOS'); h.merge(1, c, 2, c); h.ancho(c, 9);
+      h.estilo.rango(1, c, 2, c, EST.menosEnc);
+      h.estilo.rango(FILA_DATOS, c, ultima, c, EST.menos);
+      c++;
       const ponderados = [];
       inds.forEach(ind => {
         const varias = RE_INDICADOR_ACTIVIDADES.test(normalizar(ind.nombre));
         const nAct = varias ? 6 : 1;
         const iniInd = c;
-        for (let k = 1; k <= nAct; k++) { h.put(2, c, varias ? 'T' + k : 'Calificación'); h.ancho(c, varias ? 6 : 12); c++; }
+        for (let k = 1; k <= nAct; k++) {
+          h.put(2, c, varias ? 'T' + k : 'Calificación'); h.ancho(c, varias ? 6 : 12);
+          h.estilo.est(2, c, EST.etiqueta(p));
+          h.estilo.rango(FILA_DATOS, c, ultima, c, EST.centro);
+          c++;
+        }
         let prom = null;
-        if (varias) { prom = c; h.put(2, c, 'PROMEDIO'); h.ancho(c, 10); c++; }
+        if (varias) {
+          prom = c; h.put(2, c, 'PROMEDIO'); h.ancho(c, 10);
+          h.estilo.est(2, c, EST.etiqueta(p));
+          c++;
+        }
         const pond = c;
-        h.put(2, c, 'PONDERADO ' + ind.peso + '%'); h.ancho(c, 13); c++;
+        h.put(2, c, 'PONDERADO ' + ind.peso + '%'); h.ancho(c, 13);
+        h.estilo.est(2, c, EST.etiqueta(p));
+        c++;
         h.put(1, iniInd, tituloInd(ind)); h.merge(1, iniInd, 1, c - 1);
+        h.estilo.rango(1, iniInd, 1, c - 1, EST.indicador(p));
         for (let r = FILA_DATOS; r <= ultima; r++) {
           let fuente = celda(r, iniInd);
           if (varias) {
             const rango = celda(r, iniInd) + ':' + celda(r, prom - 1);
             h.put(r, prom, { f: 'IF(COUNT(' + rango + ')=0,"",AVERAGE(' + rango + '))' });
+            h.estilo.est(r, prom, EST.calculo);
             fuente = celda(r, prom);
           }
           h.put(r, pond, { f: 'IF(' + fuente + '="","",' + fuente + '*' + ind.peso + '/100)' });
+          h.estilo.est(r, pond, EST.calculo);
         }
         ponderados.push(pond);
       });
       const fin = c;
-      h.put(1, c, 'FINAL'); h.merge(1, c, 2, c); h.ancho(c, 9); c++;
+      h.put(1, c, 'FINAL'); h.merge(1, c, 2, c); h.ancho(c, 9);
+      h.estilo.rango(1, c, 2, c, EST.finalEnc);
+      c++;
       const colTotal = letraColumna(totalExtra[p]);
       for (let r = FILA_DATOS; r <= ultima; r++) {
         const lista = ponderados.map(pc => celda(r, pc)).join(',');
         const extra = "SUMIF('" + HOJA_EXTRA + "'!$B:$B,$B" + (r + 1) + ",'" + HOJA_EXTRA + "'!" + colTotal + ':' + colTotal + ')';
         h.put(r, fin, { f: 'IF(COUNT(' + lista + ')=0,"",MIN(100,MAX(0,SUM(' + lista + ')-N(' + celda(r, menos) + ')+' + extra + ')))' });
+        h.estilo.est(r, fin, EST.final);
       }
       h.put(0, ini, 'PARCIAL ' + p); h.merge(0, ini, 0, c - 1);
+      h.estilo.rango(0, ini, 0, c - 1, EST.parcial(p));
     }
 
     // --- Asistencia (1 = falta)
     const ha = nuevaHoja();
     ha.put(0, 0, 'ASISTENCIA (escribe la fecha arriba de cada sesión; 1 = falta)'); ha.merge(0, 0, 0, 2);
-    ['Equipo', 'No. Control', 'Nombre'].forEach((t, i) => ha.put(1, i, t));
+    ha.estilo.rango(0, 0, 0, 2, EST.encabezado);
+    ['Equipo', 'No. Control', 'Nombre'].forEach((t, i) => { ha.put(1, i, t); ha.estilo.est(1, i, EST.encabezado); });
     ha.ancho(0, 8); ha.ancho(1, 14); ha.ancho(2, 36);
     const SESIONES = 40;
-    for (let s = 0; s < SESIONES; s++) { ha.put(1, 3 + s, 'S' + (s + 1)); ha.ancho(3 + s, 6); }
+    for (let s = 0; s < SESIONES; s++) {
+      ha.put(1, 3 + s, 'S' + (s + 1)); ha.ancho(3 + s, 6);
+      ha.estilo.est(0, 3 + s, EST.fecha); ha.estilo.est(1, 3 + s, EST.etiqueta(1));
+    }
     const colFaltas = 3 + SESIONES;
     ha.put(1, colFaltas, 'TOTAL FALTAS'); ha.ancho(colFaltas, 12);
+    ha.estilo.rango(0, colFaltas, 1, colFaltas, EST.finalEnc);
     modelo.alumnos.forEach((al, i) => {
       const r = 2 + i;
       ha.put(r, 1, al.control); ha.put(r, 2, al.nombre);
       ha.put(r, colFaltas, { f: 'SUM(' + celda(r, 3) + ':' + celda(r, colFaltas - 1) + ')' });
+      ha.estilo.est(r, 0, EST.centro); ha.estilo.est(r, 1, EST.control); ha.estilo.est(r, 2, EST.nombre);
+      ha.estilo.rango(r, 3, r, colFaltas - 1, EST.centro);
+      ha.estilo.est(r, colFaltas, Object.assign({}, EST.final, { fmt: '0' }));
     });
+    ha.estilo.alto(0, 30); ha.estilo.alto(1, 22);
+    ha.estilo.fijar(2, 3);
 
     // --- Segunda oportunidad
     const hs = nuevaHoja();
-    ['No. Control', 'Nombre', 'Parcial 1', 'Parcial 2', 'Parcial 3'].forEach((t, i) => hs.put(0, i, t));
+    ['No. Control', 'Nombre', 'Parcial 1', 'Parcial 2', 'Parcial 3'].forEach((t, i) => {
+      hs.put(0, i, t);
+      hs.estilo.est(0, i, i < 2 ? EST.encabezado : EST.parcial(i - 1));
+    });
     hs.ancho(0, 14); hs.ancho(1, 36); hs.ancho(2, 10); hs.ancho(3, 10); hs.ancho(4, 10);
-    modelo.alumnos.forEach((al, i) => { hs.put(1 + i, 0, al.control); hs.put(1 + i, 1, al.nombre); });
+    modelo.alumnos.forEach((al, i) => {
+      hs.put(1 + i, 0, al.control); hs.put(1 + i, 1, al.nombre);
+      hs.estilo.est(1 + i, 0, EST.control); hs.estilo.est(1 + i, 1, EST.nombre);
+      hs.estilo.rango(1 + i, 2, 1 + i, 4, EST.centro);
+    });
+    hs.estilo.alto(0, 22);
+    hs.estilo.fijar(1, 2);
 
     // --- Info
-    const info = XLSX.utils.aoa_to_sheet([
+    const info = hojaInfo([
       ['CONECT Mod Docentes - Plantilla mejorada'],
       [],
       ['Grupo', modelo.grupo],
@@ -1971,17 +2234,19 @@ html.cdoc-mod body.cdoc-captura input[type=reset]{background:transparent!importa
       ['4. No cambies la columna "No. Control": con ella se identifica a cada alumno.'],
       ['5. En CONECT abre la captura del parcial y sube este archivo: se lee el bloque del parcial que estás capturando.'],
       ['6. El portal guarda una calificación por indicador; para que su final coincida con la tuya, la extensión reparte'],
-      ['   los puntos extra/menos entre los indicadores (ninguno pasa de 100). Revisa la vista previa antes de guardar.']
+      ['   los puntos extra/menos entre los indicadores (ninguno pasa de 100). Revisa la vista previa antes de guardar.'],
+      [],
+      ['Colores'],
+      ['Azul = parcial 1 · Verde = parcial 2 · Morado = parcial 3 · Gris = se calcula solo · Amarillo = calificación final · Rojo = puntos menos.']
     ]);
-    info['!cols'] = [{ wch: 30 }, { wch: 90 }];
 
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, h.fin(), 'Calificaciones');
     XLSX.utils.book_append_sheet(wb, hx.fin(), HOJA_EXTRA);
     XLSX.utils.book_append_sheet(wb, ha.fin(), 'Asistencia');
     XLSX.utils.book_append_sheet(wb, hs.fin(), 'Segunda oportunidad');
-    XLSX.utils.book_append_sheet(wb, info, 'Info');
-    guardarLibro(wb, nombrePlantilla(modelo, 'mejorada'));
+    XLSX.utils.book_append_sheet(wb, info.ws, 'Info');
+    guardarLibro(wb, nombrePlantilla(modelo, 'mejorada'), [h.estilo.meta, hx.estilo.meta, ha.estilo.meta, hs.estilo.meta, info.meta]);
   }
 
   /* ---------------- Lectura de la plantilla mejorada ---------------- */
@@ -2590,7 +2855,7 @@ html[data-cdoc-tema="dark"] input.cdoc-cambiado{background:#4a3b0a!important;col
 
   // Exponer funciones puras para pruebas (Node)
   if (EN_NODE) {
-    module.exports = { evaluarValor, calcularFinal, normalizarControl, claveNombre, analizarMatriz, autoMapear, cruzar, descargarPlantillaMejorada, leerPlantillaMejorada, ajustarIndicadores };
+    module.exports = { evaluarValor, calcularFinal, normalizarControl, claveNombre, analizarMatriz, autoMapear, cruzar, descargarPlantilla, descargarPlantillaMejorada, leerPlantillaMejorada, ajustarIndicadores };
     return;
   }
 
